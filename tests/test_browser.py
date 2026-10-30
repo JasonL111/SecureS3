@@ -21,7 +21,7 @@ from encrypt import encrypt, CHUNK
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class BrowserTests(unittest.TestCase):
+class PlayerFixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
@@ -39,6 +39,8 @@ class BrowserTests(unittest.TestCase):
             f.seek(64 * 1024**2 - 8, 1); f.write(original[moov:])
         encrypt(cls.data / 'movie.mp4', cls.data / 'movie.enc', cls.data / 'movie.key')
         cls.requests = []
+        cls.legacy_worker = False
+        cls.delay_worker = False
         data, requests = cls.data, cls.requests
 
         class Handler(SimpleHTTPRequestHandler):
@@ -49,17 +51,27 @@ class BrowserTests(unittest.TestCase):
                 if not url.path.startswith('/objects/'):
                     # Serve the app in a subdirectory to test Pages-style deployment.
                     if url.path.startswith('/viewer/'): self.path = self.path[len('/viewer'):]
+                    if self.path == '/sw.js' and (cls.legacy_worker or cls.delay_worker):
+                        body=(ROOT/'web/sw.js').read_text()
+                        if cls.legacy_worker: body=body.replace(', header: s.meta.bytes','')
+                        if cls.delay_worker: body=body.replace('self.skipWaiting()', 'new Promise(resolve => setTimeout(() => resolve(self.skipWaiting()), 300))')
+                        raw=body.encode()
+                        self.send_response(200); self.send_header('Content-Type','text/javascript')
+                        self.send_header('Cache-Control','no-cache'); self.send_header('Content-Length',str(len(raw)))
+                        self.end_headers(); self.wfile.write(raw); return
                     return super().do_GET()
                 path = data / Path(url.path).name
                 mode = parse_qs(url.query).get('mode', [''])[0]
                 value = self.headers.get('Range', '')
                 requests.append((path.name, value, mode))
-                if mode == 'expired':
-                    self.send_response(403); self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers(); return
-                if mode == 'network': self.connection.close(); return
                 match = re.fullmatch(r'bytes=(\d+)-(\d+)', value)
                 if not match: self.send_error(400); return
                 start, end = map(int, match.groups())
+                if mode.startswith('late-'):
+                    mode = mode[5:] if start >= 48 + CHUNK + 16 else ''
+                if mode == 'expired':
+                    self.send_response(403); self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers(); return
+                if mode == 'network': self.connection.close(); return
                 if not path.is_file(): self.send_error(404); return
                 size = path.stat().st_size
                 self.send_response(200 if mode == 'ignore' else 206)
@@ -74,7 +86,7 @@ class BrowserTests(unittest.TestCase):
                         f.seek(start)
                         payload = f.read(end - start + 1)
                         if mode == 'tamper' and start >= 48: payload = bytes([payload[0] ^ 1]) + payload[1:]
-                        self.wfile.write(payload)
+                        self.wfile.write(payload[:len(payload)//2] if mode == 'truncated' else payload)
                 except (BrokenPipeError, ConnectionResetError): pass
 
         cls.servers = [ThreadingHTTPServer(('127.0.0.1', 0), Handler) for _ in range(2)]
@@ -113,6 +125,8 @@ class BrowserTests(unittest.TestCase):
           return {status: r.status, range: r.headers.get('Content-Range'), length: r.headers.get('Content-Length'), body: btoa(binary)};
         }''', {'url': self.virtual(), 'range': value, 'method': method})
 
+
+class BrowserTests(PlayerFixture):
     def test_ranges_python_js_compatibility(self):
         self.load()
         self.assertTrue(self.virtual())

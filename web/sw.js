@@ -20,41 +20,8 @@ async function limited(fn, signal) {
   try { return await fn(); }
   finally { active--; queue.shift()?.grant(); }
 }
-async function fetchBytes(url, start, end, total, signal) {
-  const response = await fetch(url, {headers: {Range: `bytes=${start}-${end}`},
-    mode: 'cors', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', signal});
-  const fail = async message => { await response.body?.cancel(); throw Error(message); };
-  if (response.status === 401 || response.status === 403) return fail('对象无权访问或 URL 已过期，请更换视频 URL');
-  if (response.status !== 206) return fail('存储服务必须返回 HTTP 206；请检查 Range、CORS 和对象 URL');
-  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
-  if (!match || Number(match[1]) !== start || Number(match[2]) !== end ||
-      !Number.isSafeInteger(Number(match[3])) || Number(match[3]) <= end ||
-      (total !== null && Number(match[3]) !== total)) return fail('存储服务返回了错误的 Content-Range');
-  const length = end - start + 1, declared = response.headers.get('Content-Length');
-  if (declared !== null && Number(declared) !== length) return fail('存储服务返回了错误的 Content-Length');
-  const encoding = response.headers.get('Content-Encoding');
-  if (encoding && encoding !== 'identity') return fail('密文对象不能使用 Content-Encoding 压缩');
-  const bytes = new Uint8Array(length), reader = response.body.getReader();
-  let offset = 0;
-  try {
-    for (;;) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      if (offset + value.length > length) throw Error('密文响应超出请求范围');
-      bytes.set(value, offset); offset += value.length;
-    }
-    if (offset !== length) throw Error('密文下载中断或长度不足');
-  } catch (error) { await reader.cancel().catch(() => {}); throw error; }
-  finally { reader.releaseLock(); }
-  return {bytes, total: Number(match[3])};
-}
-async function decryptBlock(session, index, signal) {
-  return limited(async () => {
-    const b = ES3.block(session.meta, index);
-    const {bytes} = await fetchBytes(session.url, b.start, b.start + b.length + 15, session.meta.total, signal);
-    try { return new Uint8Array(await crypto.subtle.decrypt(ES3.auth(session.meta, index), session.key, bytes)); }
-    catch { throw Error('AES-GCM 认证失败：密钥错误、文件被修改或对象已替换'); }
-  }, signal);
+function decryptBlock(session, index, signal) {
+  return limited(() => ES3.decryptBlock(session, index, signal), signal);
 }
 async function configure(data, owner) {
   if (!/^[a-f0-9-]{36}$/.test(data.id) || !owner?.url?.startsWith(scope.href)) throw Error('无效会话来源');
@@ -62,7 +29,7 @@ async function configure(data, owner) {
   const url = ES3.validateURL(data.url), controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30000);
   try {
-    const header = await limited(() => fetchBytes(url, 0, ES3.HEADER - 1, null, controller.signal), controller.signal);
+    const header = await limited(() => ES3.fetchBytes(url, 0, ES3.HEADER - 1, null, controller.signal), controller.signal);
     const meta = ES3.parseHeader(header.bytes);
     if (meta.total !== header.total) throw Error('加密文件总长度不正确');
     const session = {url, key: data.key, meta, owner: owner.id};
@@ -80,7 +47,7 @@ self.addEventListener('message', event => {
     return;
   }
   if (event.data?.type !== 'configure' || !event.ports[0]) return;
-  event.waitUntil(configure(event.data, event.source).then(s => event.ports[0].postMessage({ok: true, size: s.meta.size}))
+  event.waitUntil(configure(event.data, event.source).then(s => event.ports[0].postMessage({ok: true, size: s.meta.size, header: s.meta.bytes}))
     .catch(e => event.ports[0].postMessage({error: safeError(e)})));
 });
 function safeError(error) {

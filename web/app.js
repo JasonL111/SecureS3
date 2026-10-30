@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const video = $('video');
+const downloads = ES3Download.setup();
 let current = null, revision = 0;
 function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : ''; }
 function shareData() {
@@ -10,7 +11,21 @@ function shareData() {
 }
 async function worker() {
   if (!isSecureContext || !('serviceWorker' in navigator)) throw Error('需要 HTTPS 和支持 Service Worker 的浏览器');
-  const reg = await navigator.serviceWorker.register(new URL('sw.js', location.href), {scope: './'});
+  const reg = await navigator.serviceWorker.register(new URL('sw.js', location.href), {scope: './', updateViaCache: 'none'});
+  // An existing page may still be controlled by the pre-download Worker.
+  // Wait for the newly registered Worker to activate and claim it before messaging.
+  const installing = reg.installing;
+  if (installing) {
+    await new Promise((resolve, reject) => {
+      const finish = error => { clearTimeout(timer); installing.removeEventListener('statechange', changed); error ? reject(error) : resolve(); };
+      const changed = () => {
+        if (installing.state === 'activated') finish();
+        else if (installing.state === 'redundant') finish(Error('Worker 更新失败，请刷新重试'));
+      };
+      const timer = setTimeout(() => finish(Error('Worker 更新超时，请刷新重试')), 15000);
+      installing.addEventListener('statechange', changed); changed();
+    });
+  }
   await navigator.serviceWorker.ready;
   if (!navigator.serviceWorker.controller) {
     await new Promise((resolve, reject) => {
@@ -40,6 +55,7 @@ async function load(event) {
   event?.preventDefault();
   const attempt = ++revision;
   $('load').disabled = true;
+  downloads.setSession(null);
   try {
     const data = shareData();
     status('正在验证密文和密钥…');
@@ -48,8 +64,10 @@ async function load(event) {
     if (current) navigator.serviceWorker.controller.postMessage({type: 'close', id: current.id});
     video.removeAttribute('src'); video.load();
     current = {id: crypto.randomUUID(), url: data.url, key};
-    await configure(current);
+    const verified = await configure(current);
     if (attempt !== revision) return;
+    current.meta = ES3.parseHeader(verified.header);
+    downloads.setSession(current);
     video.src = new URL('__video__/' + current.id, location.href).href;
     video.load();
     status('已验证，正在读取视频信息…');
@@ -70,7 +88,7 @@ video.addEventListener('error', () => {
   if ($('status').className === 'error') return;
   status(video.error?.code === 3 || video.error?.code === 4 ? '无法播放：MP4 编码不受支持，或视频数据不可用。请检查文件与密钥。' : '视频加载中断，请检查网络或更换已过期的 URL 后重新加载。', true);
 });
-window.addEventListener('pagehide', () => { if (current) navigator.serviceWorker.controller?.postMessage({type: 'close', id: current.id}); });
+window.addEventListener('pagehide', () => { downloads.cancel(); if (current) navigator.serviceWorker.controller?.postMessage({type: 'close', id: current.id}); });
 function readShare() {
   if (location.hash.length <= 1) return;
   try {

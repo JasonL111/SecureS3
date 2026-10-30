@@ -53,5 +53,39 @@ globalThis.ES3 = (() => {
     }
     return u.href;
   }
-  return {CHUNK, HEADER, parseHeader, block, auth, range, decode64, encode64, validateURL};
+  async function fetchBytes(url, start, end, total, signal) {
+    const response = await fetch(url, {headers: {Range: `bytes=${start}-${end}`},
+      mode: 'cors', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', signal});
+    const fail = async message => { await response.body?.cancel(); throw Error(message); };
+    if (response.status === 401 || response.status === 403) return fail('对象无权访问或 URL 已过期，请更换视频 URL');
+    if (response.status !== 206) return fail('存储服务必须返回 HTTP 206；请检查 Range、CORS 和对象 URL');
+    const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
+    if (!match || Number(match[1]) !== start || Number(match[2]) !== end ||
+        !Number.isSafeInteger(Number(match[3])) || Number(match[3]) <= end ||
+        (total !== null && Number(match[3]) !== total)) return fail('存储服务返回了错误的 Content-Range');
+    const length = end - start + 1, declared = response.headers.get('Content-Length');
+    if (declared !== null && Number(declared) !== length) return fail('存储服务返回了错误的 Content-Length');
+    const encoding = response.headers.get('Content-Encoding');
+    if (encoding && encoding !== 'identity') return fail('密文对象不能使用 Content-Encoding 压缩');
+    const bytes = new Uint8Array(length), reader = response.body.getReader();
+    let offset = 0;
+    try {
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        if (offset + value.length > length) throw Error('密文响应超出请求范围');
+        bytes.set(value, offset); offset += value.length;
+      }
+      if (offset !== length) throw Error('密文下载中断或长度不足');
+    } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+    finally { reader.releaseLock(); }
+    return {bytes, total: Number(match[3])};
+  }
+  async function decryptBlock(session, index, signal) {
+    const b = block(session.meta, index);
+    const {bytes} = await fetchBytes(session.url, b.start, b.start + b.length + 15, session.meta.total, signal);
+    try { return new Uint8Array(await crypto.subtle.decrypt(auth(session.meta, index), session.key, bytes)); }
+    catch { throw Error('AES-GCM 认证失败：密钥错误、文件被修改或对象已替换'); }
+  }
+  return {CHUNK, HEADER, parseHeader, block, auth, range, decode64, encode64, validateURL, fetchBytes, decryptBlock};
 })();
