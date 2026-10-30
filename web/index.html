@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; media-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Encrypted S3 · 私密视频播放</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="protocol.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <header><span class="mark">◈</span><span>ENCRYPTED S3</span><span class="badge">本地解密</span></header>
+  <h1>让视频，只为你播放。</h1>
+  <p class="intro">密文来自对象存储，解密留在浏览器。无需登录。</p>
+  <form id="form">
+    <label for="url">密文视频 URL</label>
+    <input id="url" type="url" required placeholder="https://storage.example.com/movie.enc" autocomplete="off" spellcheck="false">
+    <label for="key">AES-256 密钥</label>
+    <input id="key" type="password" required placeholder="Base64URL 密钥" autocomplete="off" spellcheck="false">
+    <div class="actions"><button id="load" type="submit">加载视频</button><button id="share" type="button" class="secondary">复制分享链接</button></div>
+  </form>
+  <p id="status" role="status" aria-live="polite">粘贴密文链接和密钥，或打开专用分享链接。</p>
+  <video id="video" controls playsinline preload="metadata"></video>
+  <footer>仅支持浏览器兼容的 MP4。持有分享链接的人即可解密；请私下分享。</footer>
+</main>
+</body>
+</html>
