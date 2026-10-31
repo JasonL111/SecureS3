@@ -276,13 +276,15 @@ def scan(source, recursive):
     return names
 
 
-def batch_encrypt(input_dir, output_dir, private_dir, recursive=False, dry_run=False):
+def batch_encrypt(input_dir, output_dir, private_dir, recursive=False, dry_run=False, only_names=None):
     source, output, private = [Path(os.path.abspath(p)) for p in (input_dir, output_dir, private_dir)]
     for a, b in ((source, output), (source, private), (output, private)):
         if a == b or a in b.parents or b in a.parents:
             raise vault.VaultError('Input, ciphertext output and private directories must be separate, without overlap')
     with directory(source) as source_fd:
-        names = scan(source, recursive)
+        names = scan(source, recursive) if only_names is None else sorted(set(only_names))
+        for name in names: vault.relative_name(name)
+        if len(names)>vault.MAX_FILES: raise vault.VaultError('Too many selected input files')
         result = {'scanned': len(names), 'encrypted': 0, 'skipped': 0, 'recovered': 0, 'errors': 0, 'dry_run': dry_run}
         if dry_run:
             for name in names: print(f'Would verify/encrypt: {name}', file=sys.stderr)
@@ -315,7 +317,7 @@ def batch_encrypt(input_dir, output_dir, private_dir, recursive=False, dry_run=F
                         else: raise
                     for orphan in os.listdir(staging_fd): cleanup_stage(staging_fd, orphan)
                     by_name = {f['name']: f for f in data['files']}
-                    for item in data['files']:
+                    for item in data['files'] if only_names is None else []:
                         if item['name'] not in names:
                             try:
                                 if fingerprint(source_fd, item['name']) != item['source']:
@@ -366,7 +368,7 @@ def batch_encrypt(input_dir, output_dir, private_dir, recursive=False, dry_run=F
         return result
 
 
-def batch_add(opened, manifest_path):
+def batch_add(opened, manifest_path, only_ids=None):
     path = Path(os.path.abspath(manifest_path))
     if path.name != 'manifest.json': raise vault.VaultError('Use the generated private/manifest.json')
     with directory(path.parent, private=True), vault.VaultFile(path) as store:
@@ -378,6 +380,7 @@ def batch_add(opened, manifest_path):
         with directory(layout['output_dir']) as output_fd:
             public_layout(output_fd)
             for item in data['files']:
+                if only_ids is not None and item['id'] not in only_ids: continue
                 key = verify_record(item, store.fd, output_fd)
                 record = {'id': item['id'], 'name': item['name'], 'objectKey': item['object_key'], 'key': key}
                 prior = next((f for f in files if f['id'] == item['id'] or f['key'] == key), None)

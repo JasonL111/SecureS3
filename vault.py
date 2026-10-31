@@ -17,9 +17,13 @@ import struct
 import sys
 from urllib.parse import quote, urlsplit
 
-from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+try:
+    from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+except ModuleNotFoundError:
+    if __name__ == '__main__': sys.exit('缺少 Python 加密组件。请先按 README 安装 requirements.lock 中的依赖。')
+    raise
 
 MAGIC = b'ES3VLT01'
 HEADER = struct.Struct('>8sIIIIII16s16s12s12sQQQ16s')
@@ -439,6 +443,10 @@ def prompt(new=False):
 
 
 def main(argv=None):
+    arguments = sys.argv[1:] if argv is None else argv
+    if not arguments:
+        from interactive import run
+        return run()
     p = argparse.ArgumentParser(description=__doc__)
     subs = p.add_subparsers(dest='command', required=True)
     init = subs.add_parser('init'); init.add_argument('--output', required=True)
@@ -465,7 +473,7 @@ def main(argv=None):
             sub.add_argument('--input'); sub.add_argument('--output'); sub.add_argument('--key-out'); sub.add_argument('--cipher')
             sub.add_argument('--remote', required=True); sub.add_argument('--vault-remote', required=True)
         if command == 'change-password': sub.add_argument('--memory-kib', type=int, default=65536); sub.add_argument('--iterations', type=int, default=3)
-    args = p.parse_args(argv)
+    args = p.parse_args(arguments)
     try:
         if args.command == 'batch-encrypt':
             from batch import batch_encrypt
@@ -538,4 +546,4 @@ def main(argv=None):
         p.exit(1, f'Vault operation failed: {exc}\n')
 
 
-if __name__ == '__main__': main()
+if __name__ == '__main__': raise SystemExit(main())

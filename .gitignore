@@ -26,3 +26,11 @@ manifest.json.bak
 rclone.conf
 .rclone.conf
 rclone.conf.*
+settings.json
+settings.json.bak
+state.json
+state.json.bak
+.app.lock
+.config.js.lock
+/web-config.js
+/website/

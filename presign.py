@@ -16,6 +16,12 @@ MAX_EXPIRES = 604800
 MAX_LINK = 8192
 
 
+class RcloneFailure(vault.VaultError):
+    def __init__(self, returncode):
+        self.returncode = returncode
+        super().__init__('rclone failed; verify its configuration/permissions without enabling sensitive debug logs')
+
+
 def duration(text):
     match = re.fullmatch(r'([1-9][0-9]{0,6})(s|m|h|d|w)?', text or '')
     if not match: raise vault.VaultError('Use a whole-second duration such as 3600s, 6d or 1w')
@@ -45,13 +51,19 @@ def validate_options(source, remote, expires, publish=False, vault_remote=None):
 
 
 def run_rclone(arguments, timeout=45, stdout_limit=65536, stderr_limit=16384):
-    """Drain bounded pipes, never log rclone diagnostics, kill the process group on failure."""
     env = os.environ.copy()
     for key in list(env):
         if key.startswith('RCLONE_RC') or key in ('RCLONE_LOG_FILE','RCLONE_LOG_LEVEL','RCLONE_DUMP','RCLONE_USE_SYSLOG','RCLONE_SYSLOG_FACILITY'):
             env.pop(key, None)
     args = ['rclone', '--log-level', 'ERROR', '--log-file', '', '--rc=false', '--retries', '1', '--low-level-retries', '1',
             '--contimeout', '10s', '--timeout', '30s', *arguments]
+    code,output=run_process(args,timeout,stdout_limit,stderr_limit,env)
+    if code:raise RcloneFailure(code)
+    return output
+
+
+def run_process(args,timeout=45,stdout_limit=65536,stderr_limit=16384,env=None):
+    """Drain bounded pipes without logging diagnostics; no shell or persistent child services."""
     proc = None
     try:
         proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -73,8 +85,7 @@ def run_rclone(arguments, timeout=45, stdout_limit=65536, stderr_limit=16384):
                     if label=='out': chunks.append(data)
             try: code=proc.wait(timeout=max(0.01,deadline-time.monotonic()))
             except subprocess.TimeoutExpired: raise vault.VaultError('rclone timed out') from None
-        if code: raise vault.VaultError('rclone failed; verify its configuration/permissions without enabling sensitive debug logs')
-        try: return b''.join(chunks).decode('utf-8',errors='strict')
+        try: return code,b''.join(chunks).decode('utf-8',errors='strict')
         except UnicodeError: raise vault.VaultError('rclone returned invalid output encoding') from None
     except OSError: raise vault.VaultError('Unable to run rclone; install a supported version and check the remote') from None
     finally:
@@ -86,19 +97,26 @@ def run_rclone(arguments, timeout=45, stdout_limit=65536, stderr_limit=16384):
             proc.stdout.close();proc.stderr.close()
 
 
-def backend(remote):
-    name, _ = remote_path(remote)
+def available_remotes():
     output=run_rclone(['version'],stdout_limit=16384)
     match=re.match(r'rclone v([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+][^\s]+)?(?:\s|$)',output)
     if not match or not (1,60,1) <= tuple(map(int,match.groups())) < (2,0,0):
         raise vault.VaultError('Use rclone 1.60.1 or newer in the supported 1.x series')
-    candidates=[]
+    candidates={}
     for line in run_rclone(['listremotes','--long']).splitlines():
         item=re.fullmatch(r'([^\s:]+):\s+([a-z0-9]+)',line.strip())
-        if item and item[1]==name: candidates.append(item[2])
-    if len(candidates)!=1 or candidates[0] not in ('s3','b2'):
+        if item and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}',item[1]):
+            if item[1] in candidates: raise vault.VaultError('Duplicate rclone remote name')
+            candidates[item[1]]=item[2]
+    return candidates
+
+
+def backend(remote):
+    name, _ = remote_path(remote)
+    kind=available_remotes().get(name)
+    if kind not in ('s3','b2'):
         raise vault.VaultError('Only directly configured S3 or B2 Native remotes with expiring download links are supported')
-    return candidates[0]
+    return kind
 
 
 def query(text):
