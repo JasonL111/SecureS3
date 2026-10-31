@@ -78,6 +78,16 @@ class PlayerFixture(unittest.TestCase):
                 mode = parse_qs(url.query).get('mode', [''])[0]
                 value = self.headers.get('Range', '')
                 requests.append((path.name, value, mode))
+                if not value and path.name in getattr(cls, 'full_objects', set()):
+                    if not path.is_file(): self.send_error(404); return
+                    raw=path.read_bytes();self.send_response(200)
+                    self.send_header('Content-Type','application/octet-stream')
+                    self.send_header('Content-Length',str(len(raw)))
+                    self.send_header('Access-Control-Allow-Origin','*')
+                    self.send_header('Cache-Control','no-store');self.end_headers()
+                    try:self.wfile.write(raw)
+                    except (BrokenPipeError,ConnectionResetError):pass
+                    return
                 match = re.fullmatch(r'bytes=(\d+)-(\d+)', value)
                 if not match: self.send_error(400); return
                 start, end = map(int, match.groups())

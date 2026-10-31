@@ -1,0 +1,9 @@
+{
+  "name": "hash-wasm",
+  "version": "4.12.0",
+  "tarball": "https://registry.npmjs.org/hash-wasm/-/hash-wasm-4.12.0.tgz",
+  "npm_integrity": "sha512-+/2B2rYLb48I/evdOIhP+K/DD2ca2fgBjp6O+GBEnCDk2e4rpeXIK8GvIyRPjTezgmWn9gmKwkQjjx6BtqDHVQ==",
+  "asset_sha256": "dcec617a2e1b700fa132d1583a186cb70611113395e869f2dd6cc82b415d3094",
+  "wasm": "Embedded in the local JS asset; no runtime CDN.",
+  "independent_third_party_audit": "Not established; source review and cross-implementation vectors, not certification."
+}
