@@ -1,8 +1,8 @@
 'use strict';
 globalThis.ES3Download = (() => {
-  function filename(url) {
+  function filename(url, originalName) {
     try {
-      let name = decodeURIComponent(new URL(url).pathname.split('/').pop()).normalize('NFKC');
+      let name = (typeof originalName === 'string' ? originalName.split('/').pop() + '.enc' : decodeURIComponent(new URL(url).pathname.split('/').pop())).normalize('NFKC');
       if (!/\.enc$/i.test(name)) return 'video.mp4';
       name = name.slice(0, -4).replace(/[<>:"/\\|?*\x00-\x1f\x7f\u200e-\u200f\u202a-\u202e\u2066-\u2069]/g, '_').replace(/^[ .]+|[ .]+$/g, '');
       if (!name) return 'video.mp4';
@@ -71,7 +71,7 @@ globalThis.ES3Download = (() => {
       let writable;
       try {
         // Call within the click's user activation, before any await or network request.
-        const handle = await window.showSaveFilePicker({suggestedName: filename(selected.url),
+        const handle = await window.showSaveFilePicker({suggestedName: filename(selected.url,selected.name),
           types: [{description: 'MP4 Video', accept: {'video/mp4': ['.mp4']}}]});
         controller.signal.throwIfAborted();
         let verified = selected;
@@ -85,6 +85,7 @@ globalThis.ES3Download = (() => {
           if (meta.total !== header.total) throw Error('加密文件总长度不正确');
           verified = {url, key, meta};
           await ES3.decryptBlock(verified, 0, controller.signal);
+          if (selected.objectKey) ES3VaultCrypto.checkFileId(meta,selected.id);
         }
         controller.signal.throwIfAborted();
         writable = await handle.createWritable({keepExistingData: false});

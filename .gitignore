@@ -15,3 +15,11 @@ rclone.conf
 *.enc.bak
 .*.enc.lock
 .*.tmp
+/private/
+/encrypted/
+manifest.json
+manifest.json.bak
+.batch.json
+.pending.json
+.manifest.json.lock
+.staging/

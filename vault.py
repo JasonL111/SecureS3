@@ -2,7 +2,7 @@
 """SecureS3 Vault v1: local Argon2id + envelope encryption, no video re-encryption."""
 import argparse
 import base64
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 import fcntl
 import getpass
@@ -93,13 +93,16 @@ def validate_url(text):
 
 def validate_data(data, revision):
     if (not isinstance(data, dict) or set(data) != {'version', 'revision', 'files'} or
-            type(data['version']) is not int or data['version'] != 1 or
+            type(data['version']) is not int or data['version'] not in (1, 2) or
             type(data['revision']) is not int or data['revision'] != revision or
             not isinstance(data['files'], list) or len(data['files']) > MAX_FILES):
         raise VaultError('Invalid Vault directory')
     ids, urls, keys = set(), set(), set()
     for item in data['files']:
-        if not isinstance(item, dict) or set(item) != {'id', 'name', 'url', 'key'}:
+        opaque = isinstance(item, dict) and 'objectKey' in item
+        location = 'objectKey' if opaque else 'url'
+        if (not isinstance(item, dict) or set(item) != {'id', 'name', location, 'key'} or
+                (opaque and data['version'] != 2)):
             raise VaultError('Invalid Vault record')
         if not isinstance(item['id'], str) or not re.fullmatch(r'[a-f0-9]{32}', item['id']):
             raise VaultError('Invalid record ID')
@@ -107,22 +110,44 @@ def validate_data(data, revision):
         if (not isinstance(name, str) or not name or len(name.encode('utf-8')) > 1024 or
                 re.search(r'[\x00-\x1f\x7f]', name)):
             raise VaultError('Invalid record name')
-        validate_url(item['url'])
+        if opaque:
+            relative_name(name)
+            if item['objectKey'] != object_key(item['id']):
+                raise VaultError('Object key must match the container File ID')
+        else:
+            validate_url(item['url'])
         file_key(item['key'])
-        if item['id'] in ids or item['url'] in urls or item['key'] in keys:
+        address = (location, item[location])
+        if item['id'] in ids or address in urls or item['key'] in keys:
             raise VaultError('Duplicate record ID, URL or file key')
-        ids.add(item['id']); urls.add(item['url']); keys.add(item['key'])
+        ids.add(item['id']); urls.add(address); keys.add(item['key'])
     return data
 
 
 def encode_data(data):
     # Fixed field order and UTF-8, identical to JSON.stringify in the browser.
-    ordered = {'version': 1, 'revision': data['revision'], 'files': [
-        {k: item[k] for k in ('id', 'name', 'url', 'key')} for item in data['files']]}
+    ordered = {'version': data['version'], 'revision': data['revision'], 'files': [
+        {k: item[k] for k in ('id', 'name', 'objectKey' if 'objectKey' in item else 'url', 'key')}
+        for item in data['files']]}
     raw = json.dumps(ordered, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
     if len(raw) > MAX_DATA:
         raise VaultError('Vault directory exceeds 4 MiB')
     return raw
+
+
+def object_key(file_id):
+    if not isinstance(file_id, str) or not re.fullmatch(r'[a-f0-9]{32}', file_id):
+        raise VaultError('Invalid File ID')
+    return f'objects/{file_id}.enc'
+
+
+def relative_name(name):
+    if (not isinstance(name, str) or not name or len(name.encode('utf-8')) > 1024 or
+            re.search(r'[\x00-\x1f\x7f\\]', name) or
+            any(part in ('', '.', '..') for part in name.split('/')) or
+            re.match(r'^[a-zA-Z]:', name)):
+        raise VaultError('Use a safe relative video path')
+    return name
 
 
 @dataclass(frozen=True)
@@ -225,7 +250,8 @@ def update(vault, files):
         raise VaultError('Vault revision exhausted; create a new Vault')
     meta = replace(vault.meta, revision=rev, data_revision=rev,
                    wrap_nonce=nonce(vault.meta.wrap_nonce), data_nonce=nonce(vault.meta.data_nonce))
-    return seal(meta, {'version': 1, 'revision': rev, 'files': files}, vault.key, vault.kek)
+    version = 2 if any('objectKey' in f for f in files) else vault.data['version']
+    return seal(meta, {'version': version, 'revision': rev, 'files': files}, vault.key, vault.kek)
 
 
 def add(vault, name, url, key, record_id=None):
@@ -330,18 +356,30 @@ def read_key(path):
         raise VaultError('Invalid key file') from None
 
 
-def verify_video(path, key):
+def verify_video(path, key, details=False):
     import encrypt as video
-    with open(path, 'rb') as src:
+    with nullcontext(path) if hasattr(path, 'read') else open(path, 'rb') as src:
+        before = os.fstat(src.fileno())
+        if not stat.S_ISREG(before.st_mode): raise VaultError('Video must be a regular file')
         header = src.read(48)
+        if len(header) != 48: raise VaultError('Truncated video header')
         magic, version, chunk, size, file_id, reserved = video.HEADER.unpack(header)
         count = max(1, (size + video.CHUNK - 1) // video.CHUNK)
         if header != video.make_header(size, file_id) or os.fstat(src.fileno()).st_size != 48 + size + count * 16:
             raise VaultError('Invalid video container')
         aes = AESGCM(file_key(key))
+        plain_hash, cipher_hash = hashlib.sha256(), hashlib.sha256(header)
         for i in range(count):
             counter = struct.pack('>I', i)
-            aes.decrypt(file_id[:8] + counter, src.read(min(chunk, size - i * chunk) + 16), header + counter)
+            block = src.read(min(chunk, size - i * chunk) + 16)
+            plain_hash.update(aes.decrypt(file_id[:8] + counter, block, header + counter))
+            cipher_hash.update(block)
+        after = os.fstat(src.fileno())
+        stamp = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+        if src.read(1) or stamp(before) != stamp(after): raise VaultError('Ciphertext changed during verification')
+    if details:
+        return {'id': file_id.hex(), 'size': size, 'plain_sha256': plain_hash.hexdigest(),
+                'cipher_sha256': cipher_hash.hexdigest(), 'cipher_size': before.st_size}
     return file_id.hex()
 
 
@@ -367,12 +405,20 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     subs = p.add_subparsers(dest='command', required=True)
     init = subs.add_parser('init'); init.add_argument('--output', required=True)
-    for command in ('add', 'list', 'remove', 'change-password', 'upload', 'publish'):
+    batch = subs.add_parser('batch-encrypt')
+    batch.add_argument('--input-dir', required=True); batch.add_argument('--output-dir', required=True)
+    batch.add_argument('--private-dir', required=True); batch.add_argument('--recursive', action='store_true')
+    batch.add_argument('--dry-run', action='store_true')
+    for command in ('add', 'list', 'remove', 'change-password', 'upload', 'publish', 'batch-add', 'migrate'):
         sub = subs.add_parser(command); sub.add_argument('--vault', required=True)
         if command in ('add', 'publish'):
             sub.add_argument('--name', required=True); sub.add_argument('--url', required=True); sub.add_argument('--id')
             sub.add_argument('--key-file', required=command == 'add')
         if command == 'remove': sub.add_argument('--id', required=True)
+        if command == 'batch-add': sub.add_argument('--manifest', required=True)
+        if command == 'migrate':
+            sub.add_argument('--id', required=True); sub.add_argument('--cipher', required=True)
+            sub.add_argument('--output-dir', required=True); sub.add_argument('--name')
         if command == 'upload': sub.add_argument('--remote', required=True)
         if command == 'publish':
             sub.add_argument('--input'); sub.add_argument('--output'); sub.add_argument('--key-out'); sub.add_argument('--cipher')
@@ -380,6 +426,12 @@ def main(argv=None):
         if command == 'change-password': sub.add_argument('--memory-kib', type=int, default=65536); sub.add_argument('--iterations', type=int, default=3)
     args = p.parse_args(argv)
     try:
+        if args.command == 'batch-encrypt':
+            from batch import batch_encrypt
+            result = batch_encrypt(args.input_dir, args.output_dir, args.private_dir, args.recursive, args.dry_run)
+            print(json.dumps(result, ensure_ascii=False))
+            if result['errors']: p.exit(1)
+            return
         if args.command == 'init':
             raw = create(prompt(new=True))
             with VaultFile(args.output) as store: store.commit(raw)
@@ -392,6 +444,12 @@ def main(argv=None):
                 elif args.command == 'remove': raw = remove(vault, args.id)
                 elif args.command == 'change-password':
                     raw = change_password(vault, prompt(new=True), args.memory_kib, args.iterations)
+                elif args.command == 'batch-add':
+                    from batch import batch_add
+                    raw = batch_add(vault, args.manifest) or original
+                elif args.command == 'migrate':
+                    from batch import migrate
+                    raw = migrate(vault, args.id, args.cipher, args.output_dir, args.name) or original
                 elif args.command == 'upload': copy_remote(args.vault, args.remote, is_vault=True)
                 elif args.command == 'publish':
                     import encrypt as video
@@ -405,7 +463,7 @@ def main(argv=None):
                     else: raise VaultError('Provide encrypted files or an input/output/key-out set')
                     key = read_key(key_path); verified_id = verify_video(cipher, key); record_id = args.id or verified_id
                     candidate = {'id': record_id, 'name': args.name, 'url': args.url, 'key': key}
-                    existing = next((f for f in vault.data['files'] if f['url'] == args.url), None)
+                    existing = next((f for f in vault.data['files'] if f.get('url') == args.url), None)
                     if existing != candidate:
                         if existing: raise VaultError('Object URL is already registered; use a new immutable object name')
                         raw = add(vault, args.name, args.url, key, record_id)

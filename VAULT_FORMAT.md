@@ -2,6 +2,8 @@
 
 本格式用于小型加密目录，**不改变 ES3VID01 视频格式**。NAS 是唯一写入端，浏览器只读。版本化 envelope 不是账户、DRM 或中心化撤销服务。
 
+V2 不透明对象升级保留本文的二进制 envelope/密码学设计，增加兼容旧 url 记录的内部 JSON schema 2；新增 objectKey、批量 Manifest 和迁移规则见 [V2_STORAGE.md](V2_STORAGE.md)。下方 schema 1 及既有验证记录继续作为历史兼容规范。
+
 ## 密钥结构与密码编码
 
 ```

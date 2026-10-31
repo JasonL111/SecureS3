@@ -75,6 +75,8 @@ class PlayerFixture(unittest.TestCase):
                         self.end_headers(); self.wfile.write(raw); return
                     return super().do_GET()
                 path = data / Path(url.path).name
+                for prefix, directory in getattr(cls, 'object_prefixes', {}).items():
+                    if url.path.startswith(prefix): path = directory / Path(url.path).name; break
                 mode = parse_qs(url.query).get('mode', [''])[0]
                 value = self.headers.get('Range', '')
                 requests.append((path.name, value, mode))

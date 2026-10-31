@@ -2,6 +2,8 @@
 
 > 历史范围提示：本报告及 security/evidence.json、ASVS 矩阵针对 bbbb451 的播放器加固快照，不覆盖 feature/vault 新增的 Vault/Argon2id。新增设计与验证见 [VAULT_FORMAT.md](VAULT_FORMAT.md)，不得把历史结果视作新增密码学功能的独立审计。
 
+> V2 不透明对象、批量 Manifest、多云功能的测试、边界与剩余风险见 [V2_STORAGE.md](V2_STORAGE.md)。本历史报告同样不能视为对这些新增功能的独立审计认证。
+
 ## 1. Executive Summary
 
 本次是对代码和本地可运行系统进行的应用安全审查，**不是第三方独立认证，不证明企业级合规或“100% 安全”**。审计基线为 `b948c1e12ec086ad2827c39cd0420d45631052e0`，修复版本为包含本报告的 Git 提交。按阶段 A 先保存 [初始报告](security/INITIAL_AUDIT.md)，再修改应用；原协议 `ES3VID01`、分享 JSON v1、纯静态部署和 4 MiB 分块均保持兼容。

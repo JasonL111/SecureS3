@@ -21,7 +21,7 @@ function stopPlayer() {
 function playFile(file) {
   $('url').value = file.url; $('key').value = file.key;
   $('playing-name').textContent = file.name; $('playing-name').hidden = false;
-  return load();
+  return load(null,file);
 }
 async function shareFile(file) {
   try {
@@ -74,7 +74,7 @@ navigator.serviceWorker?.addEventListener('message', event => {
   }
   if (event.data?.type === 'playback-error' && event.data.id === current?.id) status(event.data.error, true);
 });
-async function load(event) {
+async function load(event, selected = null) {
   event?.preventDefault();
   const attempt = ++revision;
   $('load').disabled = true;
@@ -93,11 +93,15 @@ async function load(event) {
     const verified = await configure(candidate);
     if (attempt !== revision) return;
     candidate.meta = ES3.parseHeader(verified.header);
-    downloads.setSession(candidate);
+    if (selected?.objectKey) ES3VaultCrypto.checkFileId(candidate.meta,selected.id);
+    downloads.setSession({...candidate,name:selected?.name});
     video.src = new URL('__video__/' + candidate.id, location.href).href;
     video.load();
     status('已验证，正在读取视频信息…');
-  } catch (error) { if (attempt === revision) status(error.message, true); }
+  } catch (error) { if (attempt === revision) {
+    if (current) navigator.serviceWorker.controller?.postMessage({type:'close',id:current.id});
+    current=null;downloads.setSession(null);status(error.message, true);
+  } }
   finally { if (attempt === revision) $('load').disabled = false; }
 }
 $('form').addEventListener('submit', load);

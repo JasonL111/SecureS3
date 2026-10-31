@@ -6,6 +6,12 @@ globalThis.ES3Vault = (() => {
     const available = isSecureContext && !!globalThis.crypto?.subtle && typeof Worker === 'function';
     $('vault-url').value = typeof config.vaultUrl === 'string' ? config.vaultUrl : '';
     const pin = config.vaultId || '';
+    let sources = [], sourceError = '';
+    try { sources = C.storageSources(config.storageSources); }
+    catch { sourceError = '存储源配置无效，请检查 config.js 中的 HTTPS 前缀和路径。'; }
+    for (const source of sources) {
+      const option = document.createElement('option');option.value = source.id;option.textContent = source.name;$('storage-source').append(option);
+    }
     let state = null, mode = 'vault', job = null, fetchJob = null, cached = null, generation = 0, openedURL = '';
     // Non-secret checkpoints live only in this page. A reload cannot guarantee freshness.
     const floors = new Map();
@@ -35,16 +41,36 @@ globalThis.ES3Vault = (() => {
       const files = state.data.files.filter(f => f.name.toLocaleLowerCase().includes(query));
       $('vault-count').textContent = query ? `${files.length} / ${state.data.files.length} 个视频` : `${files.length} 个视频`;
       const fragment = document.createDocumentFragment();
+      const hasObjects = state.data.files.some(f => 'objectKey' in f);
+      $('storage-picker').hidden = !hasObjects;
+      $('storage-note').textContent = sourceError || (hasObjects && !sources.length ? '请在 config.js 配置存储源；旧 URL 记录仍可使用。' : '手动切换副本会停止当前播放和下载。旧 URL 记录使用其原地址。');
+      const groups = new Map();
       for (const file of files) {
+        const opaque = 'objectKey' in file, folder = opaque && file.name.includes('/') ? file.name.slice(0,file.name.lastIndexOf('/')) : '';
+        let container = fragment;
+        if (folder) {
+          if (!groups.has(folder)) {
+            const group = document.createElement('section');group.className = 'vault-folder';
+            const title = document.createElement('h3');title.textContent = folder;group.append(title);groups.set(folder,group);fragment.append(group);
+          }
+          container = groups.get(folder);
+        }
         const row = document.createElement('article'); row.className = 'vault-row';
-        const name = document.createElement('span'); name.className = 'vault-name'; name.textContent = file.name; row.append(name);
+        const name = document.createElement('span'); name.className = 'vault-name'; name.textContent = folder ? file.name.slice(folder.length+1) : file.name; row.append(name);
+        if (!opaque) {const badge = document.createElement('small');badge.className='legacy-record';badge.textContent='旧 URL';name.append(' ',badge);}
         const buttons = document.createElement('div'); buttons.className = 'actions';
-        for (const [label, action] of [['播放',() => actions.play(file)],['下载',() => actions.download(file)],['分享',() => actions.share(file)]]) {
+        const invoke = action => {
+          try {
+            const selected = opaque ? {...file,url:C.resolveObject(file,sources.find(s=>s.id===$('storage-source').value))} : file;
+            return action(selected);
+          } catch(e) {status(e.message,true);}
+        };
+        for (const [label, action] of [['播放',() => invoke(actions.play)],['下载',() => invoke(actions.download)],['分享',() => invoke(actions.share)]]) {
           const b = document.createElement('button'); b.type = 'button'; b.className = 'secondary'; b.textContent = label;
-          b.disabled = label === '下载' && !canDownload;
+          b.disabled = (label === '下载' && !canDownload) || (opaque && !sources.length);
           b.addEventListener('click',action); buttons.append(b);
         }
-        row.append(buttons); fragment.append(row);
+        row.append(buttons); container.append(row);
       }
       $('vault-files').replaceChildren(fragment);
       if (!files.length) {const p = document.createElement('p');p.textContent = query ? '没有匹配的视频。' : '视频库为空，请在 NAS 添加视频。';$('vault-files').append(p);}
@@ -103,6 +129,11 @@ globalThis.ES3Vault = (() => {
       finally {if(attempt===generation)job=null;$('refresh-vault').disabled=false;}
     });
     $('lock-vault').addEventListener('click',lock);$('vault-search').addEventListener('input',render);
+    $('storage-source').addEventListener('change',() => {
+      if (!state) return;
+      actions.stop();
+      status('已切换存储源；请重新点击播放或下载。视频密钥和 Vault 保持不变。');
+    });
     $('vault-mode').addEventListener('click',defaultMode);
     $('manual-mode').addEventListener('click',() => {shareMode();mode='manual';$('heading').textContent='手动播放';});
     window.addEventListener('pagehide',clear);
