@@ -50,14 +50,31 @@ globalThis.ES3 = (() => {
     return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
   function validateURL(text) {
-    if (typeof text !== 'string' || text.length > 8192) throw Error('视频 URL 无效或过长');
+    if (typeof text !== 'string' || text.length > 8192 || /[\x00-\x20\x7f\\]/.test(text)) throw Error('视频 URL 无效或过长');
     let u;
     try { u = new URL(text); } catch { throw Error('视频 URL 格式无效'); }
     if (u.href.length > 8192 || u.username || u.password || u.hash || (u.protocol !== 'https:' &&
         !(u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)))) {
       throw Error('请使用 HTTPS 密文 URL（本地测试允许 localhost）');
     }
-    return u.href;
+    return text; // Validate only: preserve signed query bytes, order and percent escapes.
+  }
+  function checkAccess(expiresAt) {
+    if (expiresAt === undefined || expiresAt === null) return;
+    if (!Number.isSafeInteger(expiresAt) || expiresAt < 1 || expiresAt > 253402300799) throw Error('临时访问授权元数据无效');
+    if (expiresAt <= Date.now()/1000) throw Error('访问授权已过期。请在 NAS 重新运行 presign 并刷新 Vault，或索取新的分享链接。');
+  }
+  function urlExpiry(text) {
+    try {
+      const q=new URL(text).searchParams,date=q.get('X-Amz-Date'),ttl=q.get('X-Amz-Expires');
+      if (q.get('X-Amz-Algorithm')!=='AWS4-HMAC-SHA256' || !/^[0-9]{8}T[0-9]{6}Z$/.test(date||'') || !/^[1-9][0-9]{0,5}$/.test(ttl||'') || +ttl>604800) return undefined;
+      const time=Date.UTC(+date.slice(0,4),+date.slice(4,6)-1,+date.slice(6,8),+date.slice(9,11),+date.slice(11,13),+date.slice(13,15));
+      if (new Date(time).toISOString().replace(/[-:]/g,'').replace('.000','')!==date) return undefined;
+      return time/1000+Number(ttl);
+    } catch {return undefined;}
+  }
+  function temporaryURL(text) {
+    try {const q=new URL(text).searchParams;return q.has('X-Amz-Signature') || q.has('Authorization');} catch {return false;}
   }
   async function fetchBytes(url, start, end, total, signal) {
     url = validateURL(url);
@@ -74,7 +91,7 @@ globalThis.ES3 = (() => {
       const response = await fetch(url, {headers: {Range: `bytes=${start}-${end}`},
         mode: 'cors', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', signal: controller.signal});
       const fail = async message => { await response.body?.cancel(); throw Error(message); };
-      if (response.status === 401 || response.status === 403) return await fail('对象无权访问或 URL 已过期，请更换视频 URL');
+      if (response.status === 401 || response.status === 403) return await fail(`访问授权被拒绝（HTTP ${response.status}），可能已过期、撤销或权限不足。请重新 presign 并刷新 Vault，或索取新的分享链接。`);
       if (response.status !== 206) return await fail('存储服务必须返回 HTTP 206；请检查 Range、CORS 和对象 URL');
       const number = text => /^\d{1,16}$/.test(text || '') && Number.isSafeInteger(Number(text)) ? Number(text) : NaN;
       const match = /^bytes (\d{1,16})-(\d{1,16})\/(\d{1,16})$/.exec(response.headers.get('Content-Range') || '');
@@ -110,11 +127,12 @@ globalThis.ES3 = (() => {
     }
   }
   async function decryptBlock(session, index, signal) {
+    checkAccess(session.expiresAt);
     const b = block(session.meta, index);
     const {bytes} = await fetchBytes(session.url, b.start, b.start + b.length + 15, session.meta.total, signal);
     try { return new Uint8Array(await crypto.subtle.decrypt(auth(session.meta, index), session.key, bytes)); }
     catch { throw Error('AES-GCM 认证失败：密钥错误、文件被修改或对象已替换'); }
   }
   function sessionId() { return Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join(''); }
-  return {sessionId, CHUNK, HEADER, parseHeader, block, auth, range, decode64, encode64, validateURL, fetchBytes, decryptBlock};
+  return {sessionId, CHUNK, HEADER, parseHeader, block, auth, range, decode64, encode64, validateURL, checkAccess, urlExpiry, temporaryURL, fetchBytes, decryptBlock};
 })();

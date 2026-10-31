@@ -155,12 +155,16 @@ class VaultCoreTests(unittest.TestCase):
             os.close(master)
 
     def test_upload_argument_boundaries_and_cache_metadata(self):
-        with patch('vault.subprocess.run',return_value=subprocess.CompletedProcess([],0)) as run:
+        with patch('presign.run_rclone',return_value='') as run:
             vault.copy_remote(self.path,'remote:bucket/vault.enc',is_vault=True)
         args=run.call_args.args[0]
         self.assertIn('Cache-Control: no-store',args)
         self.assertEqual(args[-3:],['--',str(self.path),'remote:bucket/vault.enc'])
         self.assertFalse(run.call_args.kwargs.get('shell',False))
+        self.assertEqual(run.call_args.kwargs['timeout'],120)
+        with patch('presign.run_rclone',return_value='') as video_run:
+            vault.copy_remote(self.path,'remote:bucket/movie.enc',is_vault=False)
+        self.assertGreaterEqual(video_run.call_args.kwargs['timeout'],3600,'legacy large-video publish must not inherit the small Vault transfer deadline')
 
     def test_publish_failure_does_not_change_vault_then_retry_upload(self):
         import encrypt

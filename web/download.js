@@ -70,10 +70,12 @@ globalThis.ES3Download = (() => {
       status('请选择 MP4 保存位置…');
       let writable;
       try {
+        ES3.checkAccess(selected.expiresAt ?? ES3.urlExpiry(selected.url));
         // Call within the click's user activation, before any await or network request.
         const handle = await window.showSaveFilePicker({suggestedName: filename(selected.url,selected.name),
           types: [{description: 'MP4 Video', accept: {'video/mp4': ['.mp4']}}]});
         controller.signal.throwIfAborted();
+        ES3.checkAccess(selected.expiresAt ?? ES3.urlExpiry(selected.url));
         let verified = selected;
         if (!selected.meta) {
           // A library row opens the picker in its click, then validates this one file.
@@ -83,7 +85,7 @@ globalThis.ES3Download = (() => {
           const header = await ES3.fetchBytes(url, 0, ES3.HEADER - 1, null, controller.signal);
           const meta = ES3.parseHeader(header.bytes);
           if (meta.total !== header.total) throw Error('加密文件总长度不正确');
-          verified = {url, key, meta};
+          verified = {url, key, meta,expiresAt:selected.expiresAt ?? ES3.urlExpiry(url)};
           await ES3.decryptBlock(verified, 0, controller.signal);
           if (selected.objectKey) ES3VaultCrypto.checkFileId(meta,selected.id);
         }

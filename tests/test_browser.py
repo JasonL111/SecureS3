@@ -40,6 +40,7 @@ class PlayerFixture(unittest.TestCase):
         encrypt(cls.data / 'movie.mp4', cls.data / 'movie.enc', cls.data / 'movie.key')
         cls.requests = []
         cls.http_requests = []
+        cls.http_methods = []
         cls.legacy_worker = False
         cls.delay_worker = False
         cls.strict_headers = False
@@ -55,6 +56,7 @@ class PlayerFixture(unittest.TestCase):
                         name,value=line.strip().split(':',1);self.send_header(name,value.strip())
                 super().end_headers()
             def do_GET(self):
+                cls.http_methods.append(('GET',self.path))
                 cls.http_requests.append((self.path, dict(self.headers)))
                 url = urlsplit(self.path)
                 if not url.path.startswith('/objects/'):
@@ -80,6 +82,9 @@ class PlayerFixture(unittest.TestCase):
                 mode = parse_qs(url.query).get('mode', [''])[0]
                 value = self.headers.get('Range', '')
                 requests.append((path.name, value, mode))
+                authorizer=getattr(cls,'range_authorizer',None)
+                if authorizer and not authorizer(url):
+                    self.send_response(403);self.send_header('Access-Control-Allow-Origin','*');self.end_headers();return
                 if not value and path.name in getattr(cls, 'full_objects', set()):
                     if not path.is_file(): self.send_error(404); return
                     raw=path.read_bytes();self.send_response(200)
@@ -114,6 +119,11 @@ class PlayerFixture(unittest.TestCase):
                         if mode == 'tamper' and start >= 48: payload = bytes([payload[0] ^ 1]) + payload[1:]
                         self.wfile.write(payload[:len(payload)//2] if mode == 'truncated' else payload)
                 except (BrokenPipeError, ConnectionResetError): pass
+            def do_HEAD(self):
+                cls.http_methods.append(('HEAD',self.path))
+                if hasattr(cls,'range_authorizer') and '/private-' in self.path:
+                    self.send_response(403);self.send_header('Access-Control-Allow-Origin','*');self.end_headers();return
+                super().do_HEAD()
 
         cls.servers = [ThreadingHTTPServer(('127.0.0.1', 0), Handler) for _ in range(2)]
         for server in cls.servers: threading.Thread(target=server.serve_forever, daemon=True).start()

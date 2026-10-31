@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const video = $('video');
 const downloads = ES3Download.setup();
-let current = null, revision = 0;
+let current = null, revision = 0, selectedFile = null;
 function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : ''; }
 function checkedFile(file) {
   const url = ES3.validateURL(file.url.trim()), key = file.key.trim();
@@ -13,23 +13,27 @@ function shareData() { return checkedFile({url:$('url').value, key:$('key').valu
 function stopPlayer() {
   ++revision; downloads.cancel(); downloads.setSession(null);
   if (current) navigator.serviceWorker.controller?.postMessage({type:'close',id:current.id});
-  current = null; $('key').value = ''; $('url').value = ''; $('load').disabled = false;
+  current = null; selectedFile=null; $('key').value = ''; $('url').value = ''; $('load').disabled = false;
   $('playing-name').textContent = ''; $('playing-name').hidden = true;
   video.pause(); video.removeAttribute('src'); video.load();
   status('粘贴密文链接和密钥，或打开专用分享链接。');
 }
 function playFile(file) {
-  $('url').value = file.url; $('key').value = file.key;
+  selectedFile=file;
+  const sensitive=file.expiresAt!==undefined || ES3.temporaryURL(file.url);
+  $('url').value = sensitive?'':file.url; $('key').value = sensitive?'':file.key;
   $('playing-name').textContent = file.name; $('playing-name').hidden = false;
   return load(null,file);
 }
 async function shareFile(file) {
   try {
     const data = checkedFile(file), url = new URL(location.href);
+    ES3.checkAccess(file.expiresAt ?? ES3.urlExpiry(data.url));
     url.search = ''; url.hash = ES3.encode64(new TextEncoder().encode(JSON.stringify(data)));
     if (url.hash.length > 32769) throw Error('分享链接过长');
     await navigator.clipboard.writeText(url.href);
-    status('分享链接已复制。链接只包含当前视频的密钥，请私下分享。');
+    const expires=file.expiresAt??ES3.urlExpiry(data.url);
+    status('分享链接已复制，仅含当前视频权限。'+(expires ? `临时授权于 ${new Date(expires*1000).toLocaleString()} 过期；旧链接不会随 Vault 自动更新。` : ES3.temporaryURL(data.url)?'临时授权过期后须重新分享；旧链接不会自动更新。':'请私下分享。'));
   } catch (error) { status('复制失败：' + error.message, true); }
 }
 async function worker() {
@@ -80,7 +84,9 @@ async function load(event, selected = null) {
   $('load').disabled = true;
   downloads.setSession(null);
   try {
-    const data = shareData();
+    const data = selected ? checkedFile(selected) : shareData();
+    const expiresAt=selected?.expiresAt??ES3.urlExpiry(data.url);ES3.checkAccess(expiresAt);
+    selectedFile=selected || null;
     status('正在验证密文和密钥…');
     await worker();
     if (attempt !== revision) return;
@@ -88,7 +94,7 @@ async function load(event, selected = null) {
     if (attempt !== revision) return;
     if (current) navigator.serviceWorker.controller.postMessage({type: 'close', id: current.id});
     video.removeAttribute('src'); video.load();
-    const candidate = {id: ES3.sessionId(), url: data.url, key};
+    const candidate = {id: ES3.sessionId(), url: data.url, key, expiresAt};
     current = candidate;
     const verified = await configure(candidate);
     if (attempt !== revision) return;
@@ -100,13 +106,13 @@ async function load(event, selected = null) {
     status('已验证，正在读取视频信息…');
   } catch (error) { if (attempt === revision) {
     if (current) navigator.serviceWorker.controller?.postMessage({type:'close',id:current.id});
-    current=null;downloads.setSession(null);status(error.message, true);
+    current=null;selectedFile=null;downloads.setSession(null);status(error.message, true);
   } }
   finally { if (attempt === revision) $('load').disabled = false; }
 }
 $('form').addEventListener('submit', load);
-$('share').addEventListener('click', () => shareFile({url:$('url').value,key:$('key').value}));
-video.addEventListener('loadedmetadata', () => status('视频已就绪，点击播放。可随时拖动进度条。'));
+$('share').addEventListener('click', () => shareFile(selectedFile || {url:$('url').value,key:$('key').value}));
+video.addEventListener('loadedmetadata', () => status('视频已就绪，点击播放。可随时拖动进度条。'+(current?.expiresAt?` 临时授权截至 ${new Date(current.expiresAt*1000).toLocaleString()}，本地时间不保证服务器接受请求。`:current && ES3.temporaryURL(current.url)?' 此分享使用临时授权，到期后请索取新链接。':'')));
 video.addEventListener('error', () => {
   if ($('status').className === 'error') return;
   status(video.error?.code === 3 || video.error?.code === 4 ? '无法播放：MP4 编码不受支持，或视频数据不可用。请检查文件与密钥。' : '视频加载中断，请检查网络或更换已过期的 URL 后重新加载。', true);
@@ -122,9 +128,11 @@ function readShare() {
     if (!data || Array.isArray(data) || data.v !== 1 || typeof data.url !== 'string' || typeof data.key !== 'string') throw Error('分享链接格式错误');
     const file = checkedFile(data);
     vaultUI.shareMode();
-    $('url').value = file.url; $('key').value = file.key;
+    const temporary=ES3.temporaryURL(file.url);
+    $('url').value = temporary?'':file.url; $('key').value = temporary?'':file.key;
+    if(temporary)$('form').hidden=true;
     // Remove the secret from the current address/history entry; do not persist it elsewhere.
-    load(); return true;
+    load(null,temporary?file:null); return true;
   } catch (error) { vaultUI.defaultMode(); status('无法读取分享链接：格式无效或不受支持。', true); return true; }
 }
 

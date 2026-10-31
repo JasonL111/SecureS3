@@ -42,6 +42,7 @@ async function configure(data, owner) {
   if ((sessions.has(data.id) && sessions.get(data.id).owner !== owner.id) ||
       [...pending.values()].some(p => p.id === data.id && p.owner !== owner.id)) throw Error('会话不属于当前页面');
   if (data.key?.type !== 'secret' || data.key.algorithm.name !== 'AES-GCM' || data.key.algorithm.length !== 256 || data.key.extractable) throw Error('无效 AES 密钥');
+  ES3.checkAccess(data.expiresAt);
   if (pending.size >= MAX_SESSIONS && !pending.has(owner.id)) throw Error('播放页面过多');
   const url = ES3.validateURL(data.url), controller = new AbortController();
   pending.get(owner.id)?.controller.abort();
@@ -52,7 +53,7 @@ async function configure(data, owner) {
     const header = await limited(() => ES3.fetchBytes(url, 0, ES3.HEADER - 1, null, controller.signal), controller.signal);
     const meta = ES3.parseHeader(header.bytes);
     if (meta.total !== header.total) throw Error('加密文件总长度不正确');
-    const session = {url, key: data.key, meta, owner: owner.id, controllers: new Set()};
+    const session = {url, key: data.key, meta, expiresAt:data.expiresAt, owner: owner.id, controllers: new Set()};
     await decryptBlock(session, 0, controller.signal);
     const live = new Set((await self.clients.matchAll()).filter(player).map(c => c.id));
     for (const [id, s] of sessions) if (!live.has(s.owner)) drop(id);

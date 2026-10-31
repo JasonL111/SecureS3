@@ -381,7 +381,7 @@ def batch_add(opened, manifest_path):
                 key = verify_record(item, store.fd, output_fd)
                 record = {'id': item['id'], 'name': item['name'], 'objectKey': item['object_key'], 'key': key}
                 prior = next((f for f in files if f['id'] == item['id'] or f['key'] == key), None)
-                if prior == record: continue
+                if prior is not None and {k:v for k,v in prior.items() if k!='access'} == record: continue
                 if prior: raise vault.VaultError('Import conflicts with an existing record; use explicit migration for legacy URLs')
                 files.append(record)
         if files == opened.data['files']: return None
@@ -396,6 +396,7 @@ def migrate(opened, record_id, cipher_path, output_dir, name=None):
         info = vault.verify_video(src, old['key'], details=True)
         record = {'id': info['id'], 'name': vault.relative_name(name or old['name']),
                   'objectKey': vault.object_key(info['id']), 'key': old['key']}
+        if old.get('objectKey')==record['objectKey'] and 'access' in old: record['access']=old['access']
         files = [record if f['id'] == record_id else f for f in opened.data['files']]
         raw = vault.update(opened, files) if files != opened.data['files'] else None
         with directory(output_dir, create=True) as output_fd:
