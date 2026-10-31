@@ -31,6 +31,7 @@
     <p id="vault-status" role="status" aria-live="polite">配置 Vault URL 后输入主密码，或选择手动播放。</p>
     <section id="vault-library" hidden>
       <div class="library-heading"><h2>我的视频库 <span id="vault-count">0 个视频</span></h2><div class="actions"><button id="refresh-vault" type="button" class="secondary">刷新视频库</button><button id="lock-vault" type="button" class="secondary">锁定</button></div></div>
+      <div id="storage-picker" hidden><label for="storage-source">当前存储源</label><select id="storage-source"></select><p id="storage-note" role="status"></p></div>
       <label for="vault-search">搜索视频名称</label><input id="vault-search" type="search" placeholder="搜索视频…" autocomplete="off">
       <div id="vault-files"></div>
     </section>

@@ -39,19 +39,61 @@ globalThis.ES3VaultCrypto = (() => {
     if (!url.hostname) throw Error('URL 主机无效');
     return text;
   }
+  function relativeName(name) {
+    if (typeof name !== 'string' || !name || utf8(name).length > 1024 || /[\x00-\x1f\x7f\\]/.test(name) || /^[A-Za-z]:/.test(name) || name.split('/').some(p => !p || p === '.' || p === '..')) throw Error('视频相对路径无效');
+    return name;
+  }
+  function objectKey(id) {
+    if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id)) throw Error('Object ID 无效');
+    return `objects/${id}.enc`;
+  }
+  function checkFileId(meta, id) {
+    const actual = Array.from(meta.bytes.subarray(24,40), x => x.toString(16).padStart(2,'0')).join('');
+    if (actual !== id) throw Error('Object ID 与已认证视频文件头不一致');
+  }
+  function storageSources(raw = []) {
+    if (!Array.isArray(raw) || raw.length > 32) throw Error('存储源配置格式错误');
+    const ids = new Set();
+    return raw.map(s => {
+      if (!s || Object.keys(s).sort().join(',') !== 'baseUrl,id,name' || typeof s.id !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(s.id) || ids.has(s.id) || typeof s.name !== 'string' || !s.name || utf8(s.name).length > 128 || /[\x00-\x1f\x7f]/.test(s.name)) throw Error('存储源 ID 或名称无效');
+      validateURL(s.baseUrl);
+      const url = new URL(s.baseUrl);
+      if (url.search || url.hash || /[?#]/.test(s.baseUrl)) throw Error('存储源前缀不能含 Query 或 fragment');
+      const path = s.baseUrl.slice(s.baseUrl.indexOf('/',s.baseUrl.indexOf('://')+3));
+      // Inspect before URL normalization, including encoded dot/slash segments.
+      if (s.baseUrl.indexOf('/',s.baseUrl.indexOf('://')+3) !== -1) {
+        for (const segment of path.split('/')) {
+          const decoded = decodeURIComponent(segment);
+          if (decoded === '.' || decoded === '..' || /[/\\\x00-\x1f\x7f]/.test(decoded)) throw Error('存储源路径不能逃逸或包含编码分隔符');
+        }
+      }
+      if (!url.pathname.endsWith('/')) url.pathname += '/';
+      ids.add(s.id); return {id:s.id,name:s.name,baseUrl:url.href};
+    });
+  }
+  function resolveObject(file, source) {
+    if (file.objectKey !== objectKey(file.id)) throw Error('对象路径与 Object ID 不一致');
+    if (!source) throw Error('请先在 config.js 配置并选择存储源');
+    const base = storageSources([source])[0].baseUrl, url = new URL(file.objectKey,base);
+    if (!url.href.startsWith(base) || url.origin !== new URL(base).origin) throw Error('对象路径逃逸');
+    return ES3.validateURL(url.href);
+  }
   function validateData(data, revision) {
     const fields = (value, keys) => value && !Array.isArray(value) && typeof value === 'object' && Object.keys(value).sort().join(',') === keys;
-    if (!fields(data, 'files,revision,version') || data.version !== 1 || data.revision !== revision || !Array.isArray(data.files) || data.files.length > 10000) throw Error('Vault 目录格式错误');
+    if (!fields(data, 'files,revision,version') || ![1,2].includes(data.version) || data.revision !== revision || !Array.isArray(data.files) || data.files.length > 10000) throw Error('Vault 目录格式错误');
     const ids = new Set(), urls = new Set(), keys = new Set();
     const files = data.files.map(f => {
-      if (!fields(f, 'id,key,name,url') || typeof f.id !== 'string' || !/^[a-f0-9]{32}$/.test(f.id) || typeof f.name !== 'string' || !f.name || utf8(f.name).length > 1024 || /[\x00-\x1f\x7f]/.test(f.name)) throw Error('Vault 条目格式错误');
-      validateURL(f.url);
+      const opaque = !!f && Object.hasOwn(f,'objectKey'), location = opaque ? 'objectKey' : 'url';
+      if (!fields(f, opaque ? 'id,key,name,objectKey' : 'id,key,name,url') || (opaque && data.version !== 2) || typeof f.id !== 'string' || !/^[a-f0-9]{32}$/.test(f.id) || typeof f.name !== 'string' || !f.name || utf8(f.name).length > 1024 || /[\x00-\x1f\x7f]/.test(f.name)) throw Error('Vault 条目格式错误');
+      if (opaque) {relativeName(f.name);if(f.objectKey !== objectKey(f.id))throw Error('对象路径无效');}
+      else validateURL(f.url);
       if (typeof f.key !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(f.key) || ES3.encode64(ES3.decode64(f.key)) !== f.key || ES3.decode64(f.key).length !== 32) throw Error('Vault 文件密钥格式错误');
-      if (ids.has(f.id) || urls.has(f.url) || keys.has(f.key)) throw Error('Vault 中存在重复条目');
-      ids.add(f.id); urls.add(f.url); keys.add(f.key);
-      return {id:f.id, name:f.name, url:f.url, key:f.key};
+      const address = location + ':' + f[location];
+      if (ids.has(f.id) || urls.has(address) || keys.has(f.key)) throw Error('Vault 中存在重复条目');
+      ids.add(f.id); urls.add(address); keys.add(f.key);
+      return {id:f.id, name:f.name, [location]:f[location], key:f.key};
     });
-    return {version:1, revision, files};
+    return {version:data.version, revision, files};
   }
   async function derive(password, meta, signal) {
     signal?.throwIfAborted();
@@ -126,5 +168,6 @@ globalThis.ES3VaultCrypto = (() => {
     } catch(e){controller.abort();await reader?.cancel().catch(()=>{});throw e;}
     finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);reader?.releaseLock();}
   }
-  return {HEADER,OFFSET,MAX_FILE,header,validateKdf,validateData,passwordBytes,derive,open,unlock,fetchVault};
+  return {HEADER,OFFSET,MAX_FILE,header,validateKdf,validateData,passwordBytes,derive,open,unlock,fetchVault,
+    relativeName,objectKey,checkFileId,storageSources,resolveObject};
 })();
