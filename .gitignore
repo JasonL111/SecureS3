@@ -23,3 +23,6 @@ manifest.json.bak
 .pending.json
 .manifest.json.lock
 .staging/
+rclone.conf
+.rclone.conf
+rclone.conf.*

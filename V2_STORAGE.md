@@ -1,5 +1,7 @@
 # SecureS3 V2：对象、Manifest 和兼容性
 
+V2 的公开对象模式继续支持；新增 Private Bucket 手动预签名与 schema 3 见 [V3_PRIVATE.md](V3_PRIVATE.md)。本文不声称 V2 的公开地址本身提供授权。
+
 本升级不改变 ES3VID01 的字节布局、nonce、AAD、分块大小或独立文件 AES Key，也不改变 ES3VLT01 的 128 字节头、Argon2id、包装 AAD、Vault Key 或密码轮换流程。没有后端、新生产依赖或云厂商 API。开发分支为 `feature/opaque-object-storage`，基于已合并 Vault 的 main `5e2dde0`；其代码树与已验证的 `feature/vault` 提交 `2b3caf6` 相同。
 
 ## 对象名与公开边界

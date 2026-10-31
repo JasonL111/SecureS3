@@ -34,7 +34,7 @@ globalThis.ES3VaultCrypto = (() => {
   function validateURL(text) {
     if (typeof text !== 'string' || /[\x00-\x20\x7f\\]/.test(text) || !/^https?:\/\//.test(text)) throw Error('Vault 中的视频 URL 无效');
     const url = new URL(text), authority = text.split('/')[2];
-    if (!authority || /[^\x00-\x7f]/.test(authority)) throw Error('URL 主机须使用 ASCII/Punycode');
+    if (!authority || authority.includes('@') || /[^\x00-\x7f]/.test(authority)) throw Error('URL 主机须使用 ASCII/Punycode，且不能含用户信息');
     ES3.validateURL(text);
     if (!url.hostname) throw Error('URL 主机无效');
     return text;
@@ -51,11 +51,27 @@ globalThis.ES3VaultCrypto = (() => {
     const actual = Array.from(meta.bytes.subarray(24,40), x => x.toString(16).padStart(2,'0')).join('');
     if (actual !== id) throw Error('Object ID 与已认证视频文件头不一致');
   }
+  function sourceId(id) {
+    if (typeof id !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(id) || ['constructor','prototype'].includes(id)) throw Error('临时授权来源 ID 无效');
+    return id;
+  }
+  function validateAccess(access, object) {
+    if (!access || Array.isArray(access) || typeof access!=='object' || Object.keys(access).length<1 || Object.keys(access).length>32) throw Error('访问授权目录无效');
+    return Object.fromEntries(Object.keys(access).sort().map(id => {
+      sourceId(id);const a=access[id];
+      if (!a || Array.isArray(a) || Object.keys(a).sort().join(',')!=='expiresAt,type,url' || a.type!=='presigned' || !Number.isSafeInteger(a.expiresAt) || a.expiresAt<1 || a.expiresAt>253402300799 || typeof a.url!=='string' || /[^\x00-\x7f]/.test(a.url)) throw Error('临时授权格式错误');
+      validateURL(a.url);const u=new URL(a.url);
+      if (!u.pathname.endsWith('/'+object) || !u.search || a.url.includes('#')) throw Error('临时授权与视频对象不一致');
+      return [id,{type:'presigned',url:a.url,expiresAt:a.expiresAt}];
+    }));
+  }
   function storageSources(raw = []) {
     if (!Array.isArray(raw) || raw.length > 32) throw Error('存储源配置格式错误');
     const ids = new Set();
     return raw.map(s => {
-      if (!s || Object.keys(s).sort().join(',') !== 'baseUrl,id,name' || typeof s.id !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(s.id) || ids.has(s.id) || typeof s.name !== 'string' || !s.name || utf8(s.name).length > 128 || /[\x00-\x1f\x7f]/.test(s.name)) throw Error('存储源 ID 或名称无效');
+      const privateSource=s?.type==='presigned';
+      if (!s || Object.keys(s).sort().join(',') !== (privateSource?'id,name,type':'baseUrl,id,name') || typeof s.id !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(s.id) || ids.has(s.id) || typeof s.name !== 'string' || !s.name || utf8(s.name).length > 128 || /[\x00-\x1f\x7f]/.test(s.name)) throw Error('存储源 ID 或名称无效');
+      if(privateSource){sourceId(s.id);ids.add(s.id);return {id:s.id,name:s.name,type:'presigned'};}
       validateURL(s.baseUrl);
       const url = new URL(s.baseUrl);
       if (url.search || url.hash || /[?#]/.test(s.baseUrl)) throw Error('存储源前缀不能含 Query 或 fragment');
@@ -71,27 +87,36 @@ globalThis.ES3VaultCrypto = (() => {
       ids.add(s.id); return {id:s.id,name:s.name,baseUrl:url.href};
     });
   }
-  function resolveObject(file, source) {
+  function resolveAccess(file, source) {
     if (file.objectKey !== objectKey(file.id)) throw Error('对象路径与 Object ID 不一致');
     if (!source) throw Error('请先在 config.js 配置并选择存储源');
+    if (file.access && Object.hasOwn(file.access,source.id)) {
+      const grant=validateAccess(file.access,file.objectKey)[source.id];ES3.checkAccess(grant.expiresAt);
+      return {url:grant.url,expiresAt:grant.expiresAt};
+    }
+    if (source.type==='presigned') throw Error('此存储源尚未生成访问授权。请在 NAS 上运行 presign 命令并刷新 Vault。');
     const base = storageSources([source])[0].baseUrl, url = new URL(file.objectKey,base);
     if (!url.href.startsWith(base) || url.origin !== new URL(base).origin) throw Error('对象路径逃逸');
-    return ES3.validateURL(url.href);
+    return {url:ES3.validateURL(url.href)};
   }
+  function resolveObject(file, source) {return resolveAccess(file,source).url;}
   function validateData(data, revision) {
     const fields = (value, keys) => value && !Array.isArray(value) && typeof value === 'object' && Object.keys(value).sort().join(',') === keys;
-    if (!fields(data, 'files,revision,version') || ![1,2].includes(data.version) || data.revision !== revision || !Array.isArray(data.files) || data.files.length > 10000) throw Error('Vault 目录格式错误');
+    if (!fields(data, 'files,revision,version') || ![1,2,3].includes(data.version) || data.revision !== revision || !Array.isArray(data.files) || data.files.length > 10000) throw Error('Vault 目录格式错误');
     const ids = new Set(), urls = new Set(), keys = new Set();
     const files = data.files.map(f => {
       const opaque = !!f && Object.hasOwn(f,'objectKey'), location = opaque ? 'objectKey' : 'url';
-      if (!fields(f, opaque ? 'id,key,name,objectKey' : 'id,key,name,url') || (opaque && data.version !== 2) || typeof f.id !== 'string' || !/^[a-f0-9]{32}$/.test(f.id) || typeof f.name !== 'string' || !f.name || utf8(f.name).length > 1024 || /[\x00-\x1f\x7f]/.test(f.name)) throw Error('Vault 条目格式错误');
+      const hasAccess=!!f && Object.hasOwn(f,'access');
+      if (!fields(f, (hasAccess?'access,':'')+(opaque ? 'id,key,name,objectKey' : 'id,key,name,url')) || (opaque && data.version < 2) || (hasAccess && (!opaque || data.version!==3)) || typeof f.id !== 'string' || !/^[a-f0-9]{32}$/.test(f.id) || typeof f.name !== 'string' || !f.name || utf8(f.name).length > 1024 || /[\x00-\x1f\x7f]/.test(f.name)) throw Error('Vault 条目格式错误');
       if (opaque) {relativeName(f.name);if(f.objectKey !== objectKey(f.id))throw Error('对象路径无效');}
       else validateURL(f.url);
       if (typeof f.key !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(f.key) || ES3.encode64(ES3.decode64(f.key)) !== f.key || ES3.decode64(f.key).length !== 32) throw Error('Vault 文件密钥格式错误');
       const address = location + ':' + f[location];
       if (ids.has(f.id) || urls.has(address) || keys.has(f.key)) throw Error('Vault 中存在重复条目');
       ids.add(f.id); urls.add(address); keys.add(f.key);
-      return {id:f.id, name:f.name, [location]:f[location], key:f.key};
+      const record={id:f.id, name:f.name, [location]:f[location], key:f.key};
+      if(hasAccess)record.access=validateAccess(f.access,f.objectKey);
+      return record;
     });
     return {version:data.version, revision, files};
   }
@@ -169,5 +194,5 @@ globalThis.ES3VaultCrypto = (() => {
     finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);reader?.releaseLock();}
   }
   return {HEADER,OFFSET,MAX_FILE,header,validateKdf,validateData,passwordBytes,derive,open,unlock,fetchVault,
-    relativeName,objectKey,checkFileId,storageSources,resolveObject};
+    relativeName,objectKey,checkFileId,storageSources,resolveObject,resolveAccess,validateAccess,sourceId};
 })();

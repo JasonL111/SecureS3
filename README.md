@@ -2,6 +2,81 @@
 
 一个无需后端的 MP4 加密在线播放器。NAS 用 Python 按 4 MiB 分块加密；S3 保存单个密文文件；浏览器通过 Service Worker、HTTP Range 和 Web Crypto 按需解密。原生 `<video controls playsinline>` 支持暂停、音量、全屏和拖动，不生成完整明文 Blob；密码学组件随站点本地托管，不从第三方 CDN 加载脚本。
 
+## V3：Private Bucket，观看前手动签名并发布 Vault
+
+这是新增的可选模式；下方 V2 公开密文、旧 URL 和旧分享仍可使用。视频放在 **Private Bucket**，加密 Vault 放在**另一个稳定、公开可读取的 HTTPS 位置**。不要把 Vault 上传到仍然私有的视频 Bucket 后误以为网页可以匿名读取它。
+
+首次准备（已有加密视频/Vault 可跳过相应步骤；先按下方安装依赖和配置 rclone）：
+
+```sh
+python vault.py batch-encrypt --input-dir /nas/videos \
+  --output-dir ./encrypted --private-dir ./private --recursive
+rclone copy ./encrypted r2:private-bucket -P --immutable
+# 可选：同一份密文也复制到 B2 Private Bucket
+rclone copy ./encrypted b2:private-bucket -P --immutable
+
+# 仅在尚无 Vault 时执行 init
+mkdir -m 700 private-vault
+python vault.py init --output private-vault/vault.enc
+python vault.py batch-add --vault private-vault/vault.enc --manifest ./private/manifest.json
+```
+
+**想观看时，只需手动运行一次：**
+
+```sh
+python vault.py presign --vault private-vault/vault.enc \
+  --source r2 --remote r2:private-bucket --expires 6d \
+  --vault-remote public:public-bucket/vault.enc --publish
+```
+
+交互输入一次 Vault 主密码，程序使用已有 rclone 配置，为所有 objectKey 记录生成临时 GET URL；全部校验成功后统一加密并原子更新 Vault/保留旧备份，随后发布新版。不会重新加密视频、改名、替换 AES Key/Vault Key、重新上传视频或上传 `.key`。结果只输出数量、来源、Unix 秒失效时间、容量及发布结果，不打印签名 URL。
+
+```sh
+# 预览对象/名称、后端及容量估算；不生成链接、不更新/上传 Vault
+python vault.py presign --vault private-vault/vault.enc \
+  --source r2 --remote r2:private-bucket --expires 6d --dry-run
+
+# 只更新本地，不上传：省略 --publish
+python vault.py presign --vault private-vault/vault.enc \
+  --source r2 --remote r2:private-bucket --expires 6d
+
+# 为第二个来源签名，保留已存在的 R2 授权
+python vault.py presign --vault private-vault/vault.enc \
+  --source b2 --remote b2:private-bucket --expires 6d \
+  --vault-remote public:public-bucket/vault.enc --publish
+
+# 若签名/本地更新成功，但上传失败，只重传，不要重新签 500 个对象
+python vault.py upload --vault private-vault/vault.enc --remote public:public-bucket/vault.enc
+```
+
+先部署新版网页，再发布 V3 Vault。`web/config.js` 中只填写公开 Vault URL、公共 Vault ID 和来源名称，不填云端 Secret 或临时链接；Private 来源不需要公开 baseUrl：
+
+```javascript
+globalThis.SECURES3_CONFIG = Object.freeze({
+  vaultUrl: 'https://your-public-vault-domain.example/vault.enc',
+  vaultId: '', // 建议填写 NAS 输出的可信公共 ID
+  storageSources: [
+    {id: 'r2', name: 'Cloudflare R2 Private', type: 'presigned'},
+    {id: 'b2', name: 'Backblaze B2 Private', type: 'presigned'}
+    // 旧公开来源仍可用：{id:'public',name:'Public',baseUrl:'https://your-domain/'}
+  ]
+});
+```
+
+打开 Pages，刷新/解锁 Vault，即可选择来源、播放、Seek、流式下载或分享。来源 ID 必须与 NAS --source 相同。Private 来源缺少授权/已过期会提示重新 presign，不猜地址、不回退公开来源。授权临近到期会警告；下载/播放期间到期可能中断，HTTP 403 会归类为访问授权问题，不冒充 AES 密钥错误。
+
+需要 rclone **1.60.1+ 的 1.x 系列**；仅接受直接配置的 **S3**（R2、B2 S3 等）和 **B2 Native** remote。S3 使用 SigV4、最长 604800 秒；R2 签名通常指向 S3 API 域名，而非 r2.dev/普通自定义域名。B2 Native 用其专有下载授权，并显式传递 --b2-download-auth-duration；不能假设 --expire 对它生效。B2 Native 是完整对象名的**前缀授权**，并非严格的单对象令牌；必须保持只有规范 objects/<id>.enc 的命名空间，勿创建以该完整名称继续追加后缀的其他对象。原生后端需要相应 shareFiles/read 权限，真实账户限制需核实。
+
+远端名/路径须为简单的 `name:bucket[/prefix]`，不接受临时内联凭据、别名/crypt/union 或不支持到期控制的后端。签名子进程限时/限量捕获输出，关闭继承的敏感调试日志及 RC 服务设置；不创建常驻服务。如果 rclone 配置本身加密，应先使用 rclone 的安全本地配置方式使其可非交互读取，不能把 Vault 主密码传给 rclone 或放进参数/环境变量。
+
+**到期后再次手动运行同一条 presign 即可。**不必每天执行，没有 cron、systemd timer、后台续签、Worker 签名 API 或浏览器自动签名。旧分享仍为 `{v:1,url,key}`，只交付单文件权限，具有相同临时授权期限；Vault 重新签名不会更新已发出的旧链接，需要重新分享。B2 Native 的旧格式分享不携带期限且 token 不透明，接收端无法仅靠链接读取确切到期时间，会提示临时性并在 403 时要求新链接。
+
+签名失败时旧 Vault 不变且不发布半批；上传失败时保留本地新版，使用 upload 重试。本地提交和云端发布不是跨系统原子事务。4 MiB 目录上限保持不变：先估算、逐项跟踪实际增长、最终严格校验，超限拒绝且不截断 URL/条目。
+
+视频 Bucket 必须自行关闭匿名读取、设置允许 Pages Origin 的 CORS，并验证 GET Range 返回正确 206。公开加密 Vault 要用强主密码及 no-store 缓存策略。S3 本地签名不等于整个命令零云请求：rclone 可能先执行 HEAD；B2 Native 签发涉及 API 请求，后续 Range GET 仍可能产生正常费用。云 ACL、CORS、域名和费用均由部署者验证。
+
+本次 **114 项测试全部通过，无跳过**，含 500 对象、真实 rclone 本地 TLS S3/B2 模拟、真实 Chromium 及两项 3 GiB 回归；尚未实测真实 R2/B2 Private Bucket。协议、失败恢复、CORS 示例、安全边界、工具版本与限制见 [V3_PRIVATE.md](V3_PRIVATE.md)。
+
 ## V2：不透明对象名、批量处理与多云副本
 
 新视频推荐以下流程。云端仅保存 `objects/<32位小写hex file_id>.enc`，ID 直接来自原有 ES3VID01 容器的随机 128 位 file_id，不从文件名称推导，也不能由批量命令指定。真实名称及相对目录加密保存在 Vault 中。**加密视频格式、每文件独立 AES Key、主密码/包装算法均未改变。**
@@ -82,7 +157,7 @@ migrate 使用 Vault 内原 key 完整验证实际容器，从头读取 File ID�
 
 若 NAS 已无旧密文，可先自行用 rclone 取回 `.enc`；迁移命令不联网、不从旧 URL 猜测 ID。没有实际容器或无法确认匹配的记录继续保留旧 URL。
 
-**公开密文、不透明路径和 CORS 都不是身份认证。**持有 URL 可匿名下载；对象列表权限、HTTPS 域名、Bucket/CORS/Range 配置由你管理。rclone --immutable 用于拒绝修改已有远端对象；批量工具不连接云端或验证远端冲突。若将来使用私有 Bucket，需要另行提供合法授权机制，本次不实现网关或 Presigned URL 管理。
+**公开密文、不透明路径和 CORS 都不是身份认证。**持有公开 URL 可匿名下载；对象列表权限、HTTPS 域名、Bucket/CORS/Range 配置由你管理。rclone --immutable 用于拒绝修改已有远端对象；批量加密工具不连接云端或验证远端冲突。Private Bucket 的新增手动预签名流程见上方 V3；没有鉴权网关。
 
 完整 Manifest/Vault schema、崩溃恢复、兼容顺序及实测边界见 [V2_STORAGE.md](V2_STORAGE.md)。下面的单文件 add/publish 流程继续保留为旧 URL 模式，不会自动隐藏它指定的云端文件名。
 
@@ -132,7 +207,7 @@ vaultId 可留空，但建议从可信 NAS pin 此公共标识以检测整个 Va
 
 点击「锁定」停止当前播放/下载、终止解锁任务、清除库/当前 key 引用并返回解锁页；不宣称 JS 可以物理擦除所有历史内存副本。刷新视频库使用内存中的不可导出 KEK，重新认证整个包装和目录；密码包装已变更时需重新输入主密码。刷新认证失败或回滚会清空库并锁定，不展示部分新数据。
 
-从库点击「分享」只复制 `{v:1,url,key}` 的 fragment 链接。朋友在新/无痕窗口打开后，直接进入 Share Mode，不需要主密码，**不会获取整个 Vault 或加载 Argon2 Worker**。单文件链接不含 Vault Key、KEK 或其他文件 key。公开 R2 对象链接的可获取期由对象/域名决定，外部 Presigned URL 仍受其到期限制；不生成或续签 URL。
+从库点击「分享」只复制 `{v:1,url,key}` 的 fragment 链接。朋友在新/无痕窗口打开后，直接进入 Share Mode，不需要主密码，**不会获取整个 Vault 或加载 Argon2 Worker**。单文件链接不含 Vault Key、KEK 或其他文件 key。公开 R2 对象链接的可获取期由对象/域名决定，Presigned URL 受其到期限制；浏览器不生成或续签 URL，NAS 可使用 V3 presign。
 
 R2 CORS 继续允许 GET/HEAD 并向播放器 Origin 暴露 Content-Length；视频 Range 所需头仍按下方示例。Vault 使用普通完整 GET，必须返回 200/完整有界文件，不接受内容压缩。浏览器使用 no-store，但 CDN 规则可覆盖缓存：请让 vault.enc 返回 `Cache-Control: no-store`、不要对它配置长 Edge TTL，并用实际域名核对头。r2.dev/自定义域名/实际账户策略需自行验证。
 
@@ -215,6 +290,7 @@ web/index.html            简洁中文界面、CSP、原生 video
 web/style.css             响应式样式
 vault.py                  创建/维护/轮换/上传 Vault 与可选发布
 batch.py                  无云依赖的批量加密、私有 Manifest、恢复与迁移
+presign.py                有界 rclone 签名/上传适配、URL 校验与批次事务准备
 web/config.js             非秘密 Vault URL/ID 配置
 web/vault.js              同一网站的视频库 UI 与锁定
 web/vault-crypto.js       Vault 格式、校验和本地 Web Crypto
@@ -222,6 +298,7 @@ web/vault-kdf.js          可取消的 Argon2id Worker
 web/vendor/               固定版本本地 WASM/JS、许可和来源
 VAULT_FORMAT.md           Vault 二进制协议、密钥边界与实测记录
 V2_STORAGE.md             不透明对象、Manifest v2、多云与迁移/验证记录
+V3_PRIVATE.md             私有视频/公开 Vault、schema 3、后端/安全/实测记录
 web/app.js                分享链接、页面会话、Worker 生命周期
 web/download.js           分块解密下载、原生文件流写入、进度与取消
 web/protocol.js           文件头、整数校验、Range 和 AES 参数
@@ -234,6 +311,10 @@ web/_headers              Cloudflare Pages 安全响应头
  tests/test_vault_ui.py   真实浏览器私人库、分享与锁定回归
  tests/test_batch.py      批量命名、500 个文件、攻击/中断恢复及内存测试
  tests/test_storage_ui.py 双存储源、V2/旧记录兼容与真实浏览器集成
+ tests/test_presign.py    签名事务、500 对象、真实 TTY、容量及子进程边界
+ tests/test_rclone_backend.py 当前 rclone 与验证 CA 的本地 TLS S3/B2 API
+ tests/test_presign_ui.py 临时 URL、过期/403、Query/Range/Seek/分享与隔离
+ tests/rclone_stub.py     仅测试用子进程模拟器，不含真实云凭据
 ```
 
 所有整数为**无符号、大端序**。文件头固定 48 字节：

@@ -4,6 +4,8 @@
 
 V2 不透明对象升级保留本文的二进制 envelope/密码学设计，增加兼容旧 url 记录的内部 JSON schema 2；新增 objectKey、批量 Manifest 和迁移规则见 [V2_STORAGE.md](V2_STORAGE.md)。下方 schema 1 及既有验证记录继续作为历史兼容规范。
 
+V3 同样保持此外层与主密码设计，仅扩展认证 JSON 至 schema 3 的 access；手动 rclone 预签名、期限和公开 Vault/私有视频隔离见 [V3_PRIVATE.md](V3_PRIVATE.md)。
+
 ## 密钥结构与密码编码
 
 ```

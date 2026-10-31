@@ -14,7 +14,6 @@ import re
 import secrets
 import stat
 import struct
-import subprocess
 import sys
 from urllib.parse import quote, urlsplit
 
@@ -32,6 +31,14 @@ MAX_REVISION = 2**32 - 1
 MAX_FILES = 10000
 WRAP_AAD = b'SecureS3 Vault wrap v1\x00'
 DATA_AAD = b'SecureS3 Vault data v1\x00'
+MAX_ACCESS_TIME = 253402300799
+
+
+def source_id(value):
+    if (not isinstance(value, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', value) or
+            value in ('constructor', 'prototype')):
+        raise VaultError('Source ID must start with a letter and contain at most 32 letters, digits, _ or -')
+    return value
 
 
 class VaultError(ValueError):
@@ -93,7 +100,7 @@ def validate_url(text):
 
 def validate_data(data, revision):
     if (not isinstance(data, dict) or set(data) != {'version', 'revision', 'files'} or
-            type(data['version']) is not int or data['version'] not in (1, 2) or
+            type(data['version']) is not int or data['version'] not in (1, 2, 3) or
             type(data['revision']) is not int or data['revision'] != revision or
             not isinstance(data['files'], list) or len(data['files']) > MAX_FILES):
         raise VaultError('Invalid Vault directory')
@@ -101,8 +108,10 @@ def validate_data(data, revision):
     for item in data['files']:
         opaque = isinstance(item, dict) and 'objectKey' in item
         location = 'objectKey' if opaque else 'url'
-        if (not isinstance(item, dict) or set(item) != {'id', 'name', location, 'key'} or
-                (opaque and data['version'] != 2)):
+        has_access = isinstance(item, dict) and 'access' in item
+        fields = {'id', 'name', location, 'key'} | ({'access'} if has_access else set())
+        if (not isinstance(item, dict) or set(item) != fields or (opaque and data['version'] < 2) or
+                (has_access and (not opaque or data['version'] != 3))):
             raise VaultError('Invalid Vault record')
         if not isinstance(item['id'], str) or not re.fullmatch(r'[a-f0-9]{32}', item['id']):
             raise VaultError('Invalid record ID')
@@ -117,6 +126,7 @@ def validate_data(data, revision):
         else:
             validate_url(item['url'])
         file_key(item['key'])
+        if has_access: validate_access(item['access'], item['objectKey'])
         address = (location, item[location])
         if item['id'] in ids or address in urls or item['key'] in keys:
             raise VaultError('Duplicate record ID, URL or file key')
@@ -124,11 +134,35 @@ def validate_data(data, revision):
     return data
 
 
+def validate_access(access, object_key):
+    if not isinstance(access, dict) or not 1 <= len(access) <= 32:
+        raise VaultError('Invalid source access directory')
+    for source, grant in access.items():
+        source_id(source)
+        if (not isinstance(grant, dict) or set(grant) != {'type', 'url', 'expiresAt'} or
+                grant['type'] != 'presigned' or type(grant['expiresAt']) is not int or
+                not 1 <= grant['expiresAt'] <= MAX_ACCESS_TIME):
+            raise VaultError('Invalid temporary access metadata')
+        validate_url(grant['url'])
+        if not grant['url'].isascii(): raise VaultError('Temporary URLs must use ASCII URL encoding')
+        # Loopback HTTP remains available only for local protocol tests. CLI signing requires HTTPS.
+        parsed = urlsplit(grant['url'])
+        if not parsed.path.endswith('/' + object_key) or not parsed.query or '#' in grant['url']:
+            raise VaultError('Temporary access does not target this object')
+
+
+def ordered_record(item):
+    ordered = {k: item[k] for k in ('id', 'name', 'objectKey' if 'objectKey' in item else 'url', 'key')}
+    if 'access' in item:
+        ordered['access'] = {s: {k: item['access'][s][k] for k in ('type', 'url', 'expiresAt')}
+                             for s in sorted(item['access'])}
+    return ordered
+
+
 def encode_data(data):
     # Fixed field order and UTF-8, identical to JSON.stringify in the browser.
     ordered = {'version': data['version'], 'revision': data['revision'], 'files': [
-        {k: item[k] for k in ('id', 'name', 'objectKey' if 'objectKey' in item else 'url', 'key')}
-        for item in data['files']]}
+        ordered_record(item) for item in data['files']]}
     raw = json.dumps(ordered, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
     if len(raw) > MAX_DATA:
         raise VaultError('Vault directory exceeds 4 MiB')
@@ -250,7 +284,8 @@ def update(vault, files):
         raise VaultError('Vault revision exhausted; create a new Vault')
     meta = replace(vault.meta, revision=rev, data_revision=rev,
                    wrap_nonce=nonce(vault.meta.wrap_nonce), data_nonce=nonce(vault.meta.data_nonce))
-    version = 2 if any('objectKey' in f for f in files) else vault.data['version']
+    version = max(vault.data['version'], 3 if any('access' in f for f in files) else
+                  2 if any('objectKey' in f for f in files) else 1)
     return seal(meta, {'version': version, 'revision': rev, 'files': files}, vault.key, vault.kek)
 
 
@@ -384,11 +419,13 @@ def verify_video(path, key, details=False):
 
 
 def copy_remote(source, remote, is_vault=False):
-    args = ['rclone', 'copyto', '--progress', '--retries', '1', '--low-level-retries', '1']
+    from presign import run_rclone
+    args = ['copyto']
     if is_vault: args += ['--header-upload', 'Cache-Control: no-store']
-    result = subprocess.run([*args, '--', str(source), remote], check=False)
-    if result.returncode:
-        raise VaultError('Upload failed; local encrypted files and current Vault are retained for retry')
+    # Vaults are at most ~4 MiB; retain a finite but much larger budget for legacy video publish.
+    try: run_rclone([*args, '--', str(source), remote], timeout=120 if is_vault else 86400)
+    except (ValueError, OSError):
+        raise VaultError('Upload failed; local encrypted files and current Vault are retained. Retry vault.py upload without signing again') from None
 
 
 def prompt(new=False):
@@ -409,7 +446,7 @@ def main(argv=None):
     batch.add_argument('--input-dir', required=True); batch.add_argument('--output-dir', required=True)
     batch.add_argument('--private-dir', required=True); batch.add_argument('--recursive', action='store_true')
     batch.add_argument('--dry-run', action='store_true')
-    for command in ('add', 'list', 'remove', 'change-password', 'upload', 'publish', 'batch-add', 'migrate'):
+    for command in ('add', 'list', 'remove', 'change-password', 'upload', 'publish', 'batch-add', 'migrate', 'presign'):
         sub = subs.add_parser(command); sub.add_argument('--vault', required=True)
         if command in ('add', 'publish'):
             sub.add_argument('--name', required=True); sub.add_argument('--url', required=True); sub.add_argument('--id')
@@ -420,6 +457,10 @@ def main(argv=None):
             sub.add_argument('--id', required=True); sub.add_argument('--cipher', required=True)
             sub.add_argument('--output-dir', required=True); sub.add_argument('--name')
         if command == 'upload': sub.add_argument('--remote', required=True)
+        if command == 'presign':
+            sub.add_argument('--source', required=True); sub.add_argument('--remote', required=True)
+            sub.add_argument('--expires', default='6d'); sub.add_argument('--vault-remote')
+            sub.add_argument('--publish', action='store_true'); sub.add_argument('--dry-run', action='store_true')
         if command == 'publish':
             sub.add_argument('--input'); sub.add_argument('--output'); sub.add_argument('--key-out'); sub.add_argument('--cipher')
             sub.add_argument('--remote', required=True); sub.add_argument('--vault-remote', required=True)
@@ -450,6 +491,16 @@ def main(argv=None):
                 elif args.command == 'migrate':
                     from batch import migrate
                     raw = migrate(vault, args.id, args.cipher, args.output_dir, args.name) or original
+                elif args.command == 'presign':
+                    from presign import sign_vault, validate_options
+                    validate_options(args.source, args.remote, args.expires, args.publish, args.vault_remote)
+                    replacement, report = sign_vault(vault, args.source, args.remote, args.expires, args.dry_run)
+                    if replacement is not None:
+                        raw = replacement; store.commit(raw, previous=original)
+                    if args.publish and not args.dry_run:
+                        copy_remote(args.vault, args.vault_remote, is_vault=True);report['published'] = True
+                    print(json.dumps({**report, 'vault_bytes': len(raw), 'revision': parse(raw).revision}))
+                    return
                 elif args.command == 'upload': copy_remote(args.vault, args.remote, is_vault=True)
                 elif args.command == 'publish':
                     import encrypt as video

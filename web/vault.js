@@ -8,7 +8,7 @@ globalThis.ES3Vault = (() => {
     const pin = config.vaultId || '';
     let sources = [], sourceError = '';
     try { sources = C.storageSources(config.storageSources); }
-    catch { sourceError = '存储源配置无效，请检查 config.js 中的 HTTPS 前缀和路径。'; }
+    catch { sourceError = '存储源配置无效，请检查 config.js 的公开前缀或 presigned 来源 ID。'; }
     for (const source of sources) {
       const option = document.createElement('option');option.value = source.id;option.textContent = source.name;$('storage-source').append(option);
     }
@@ -43,7 +43,7 @@ globalThis.ES3Vault = (() => {
       const fragment = document.createDocumentFragment();
       const hasObjects = state.data.files.some(f => 'objectKey' in f);
       $('storage-picker').hidden = !hasObjects;
-      $('storage-note').textContent = sourceError || (hasObjects && !sources.length ? '请在 config.js 配置存储源；旧 URL 记录仍可使用。' : '手动切换副本会停止当前播放和下载。旧 URL 记录使用其原地址。');
+      $('storage-note').textContent = sourceError || (hasObjects && !sources.length ? '请在 config.js 配置存储源；旧 URL 记录仍可使用。' : '切换会停止当前播放/下载。Private 来源需 NAS 手动 presign；旧 URL 记录使用原地址。');
       const groups = new Map();
       for (const file of files) {
         const opaque = 'objectKey' in file, folder = opaque && file.name.includes('/') ? file.name.slice(0,file.name.lastIndexOf('/')) : '';
@@ -61,7 +61,9 @@ globalThis.ES3Vault = (() => {
         const buttons = document.createElement('div'); buttons.className = 'actions';
         const invoke = action => {
           try {
-            const selected = opaque ? {...file,url:C.resolveObject(file,sources.find(s=>s.id===$('storage-source').value))} : file;
+            const access=opaque?C.resolveAccess(file,sources.find(s=>s.id===$('storage-source').value)):{};
+            const selected = opaque ? {...file,...access} : file;
+            if(access.expiresAt && access.expiresAt-Date.now()/1000<3600)status(`此视频的访问授权约 ${Math.max(1,Math.floor((access.expiresAt-Date.now()/1000)/60))} 分钟后到期，长视频或下载可能中断；NAS 可手动 presign。`);
             return action(selected);
           } catch(e) {status(e.message,true);}
         };
