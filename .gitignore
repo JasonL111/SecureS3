@@ -4,3 +4,11 @@ __pycache__/
 *.key
 *.enc
 .test-artifacts/
+*.mp4
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+rclone.conf
+.aws/

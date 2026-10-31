@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "audited_at_utc": "2026-10-31T00:33:43Z",
+  "client_local_date": "2026-10-30 America/New_York",
+  "baseline_commit": "b948c1e12ec086ad2827c39cd0420d45631052e0",
+  "scope": "Selected repository, local execution, baseline reachable history; not production account configuration",
+  "tools": {
+    "bandit": "1.9.4",
+    "semgrep": "1.183.0",
+    "pip-audit": "2.10.1",
+    "detect-secrets": "1.5.0",
+    "cvss": "3.6",
+    "python": "3.12.14",
+    "node": "24.19.0",
+    "chromium": "154.0.8037.57",
+    "playwright": "1.62.0",
+    "cryptography": "50.0.0",
+    "bundled_openssl": "4.0.1 (9 Jun 2026)",
+    "ffmpeg": "7.1.5",
+    "rclone": "1.60.1-DEV (not SCA audited)"
+  },
+  "scans": {
+    "pre": {
+      "bandit": {
+        "findings": 0,
+        "errors": 0
+      },
+      "semgrep": {
+        "findings": 0,
+        "errors": 0
+      },
+      "secrets": {
+        "candidate_files": 0,
+        "candidate_count": 0,
+        "heuristic_only": true
+      },
+      "pip-audit": {
+        "service": "PyPI",
+        "query_completed": true,
+        "packages": [
+          {
+            "name": "cryptography",
+            "version": "50.0.0",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "playwright",
+            "version": "1.62.0",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "greenlet",
+            "version": "3.5.6",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "pyee",
+            "version": "13.0.1",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "cffi",
+            "version": "2.1.1",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "pycparser",
+            "version": "3.12",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "typing-extensions",
+            "version": "4.16.0",
+            "vulnerability_ids": []
+          }
+        ],
+        "known_vulnerabilities": 0
+      }
+    },
+    "post": {
+      "bandit": {
+        "findings": 0,
+        "errors": 0
+      },
+      "semgrep": {
+        "findings": 0,
+        "errors": 0
+      },
+      "secrets": {
+        "candidate_files": 0,
+        "candidate_count": 0,
+        "heuristic_only": true
+      },
+      "pip-audit": {
+        "service": "PyPI",
+        "query_completed": true,
+        "packages": [
+          {
+            "name": "cryptography",
+            "version": "50.0.0",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "playwright",
+            "version": "1.62.0",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "greenlet",
+            "version": "3.5.6",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "pyee",
+            "version": "13.0.1",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "cffi",
+            "version": "2.1.1",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "pycparser",
+            "version": "3.12",
+            "vulnerability_ids": []
+          },
+          {
+            "name": "typing-extensions",
+            "version": "4.16.0",
+            "vulnerability_ids": []
+          }
+        ],
+        "known_vulnerabilities": 0
+      }
+    },
+    "semgrep_scope": {
+      "rules": 5,
+      "production_source_targets": 5,
+      "rules_file": "security/semgrep.yml",
+      "full_community_rules": false
+    },
+    "history": {
+      "commits": [
+        "b948c1e12ec086ad2827c39cd0420d45631052e0",
+        "e52a42181282571359cd23b8956e2623ad9c0243"
+      ],
+      "candidate_count": 0,
+      "includes_unreachable_objects": false
+    },
+    "final_tree": {
+      "candidate_files": 1,
+      "candidate_count": 14,
+      "confirmed_secrets": 0,
+      "false_positives": [
+        {
+          "line": 5,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 146,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 199,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 236,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 237,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 238,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 239,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 240,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 241,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 242,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 243,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 244,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 245,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        },
+        {
+          "line": 246,
+          "detector": "Hex High Entropy String",
+          "verified_as": "Git commit ID or recomputed source SHA-256, not a credential"
+        }
+      ],
+      "method": "Matched every candidate to recorded project/official ASVS Git IDs or recomputed source hashes; did not exclude the evidence file."
+    }
+  },
+  "tests": {
+    "full_suite": {
+      "command": "SECURES3_LARGE_DOWNLOAD_TEST=1 .venv/bin/python -m unittest discover -s tests -v",
+      "tests": 40,
+      "passed": 40,
+      "failed": 0,
+      "skipped": 0,
+      "duration_seconds": 108.955
+    },
+    "node_attack_cases": {
+      "command": "node tests/security_protocol.cjs",
+      "tests": 14,
+      "passed": 14,
+      "included_by_one_python_wrapper": true
+    },
+    "baseline_attack_suite": {
+      "tests": 12,
+      "passed": 6,
+      "failed": 6,
+      "one_failed_wrapper_includes_node_cases": true
+    },
+    "baseline_node_cases": {
+      "tests": 10,
+      "passed": 1,
+      "failed": 9
+    },
+    "fuzz_cases": {
+      "headers": 3000,
+      "range": 3000,
+      "range_oracle": "Independent BigInt model",
+      "coverage_guided": false
+    },
+    "large_download": {
+      "plaintext_bytes": 3221225609,
+      "verified_chunk_sha256": 769,
+      "renderer_rss_baseline_mib": 299.2,
+      "renderer_rss_peak_mib": 604.6,
+      "test_file_sink": "Native FileSystemWritableFileStream from OPFS in disposable persistent Chromium profile; OS picker substituted",
+      "manual_OS_picker_tested": false
+    },
+    "hash_locked_fresh_environment": {
+      "packages": 3,
+      "encryption_tests_passed": 5
+    }
+  },
+  "asvs": {
+    "version": "5.0.0",
+    "official_source_commit": "180622b1329ee7ed349c9f5ce5e14fa91f42c359",
+    "requirements": 345,
+    "status_counts": {
+      "Pass": 82,
+      "N/A": 194,
+      "Not Verified": 57,
+      "Fail": 12
+    },
+    "full_L3_satisfied": false
+  },
+  "findings": {
+    "confirmed_unfixed": {
+      "Critical": 0,
+      "High": 0,
+      "Medium": 0
+    },
+    "medium_fixed": 1,
+    "low_groups_fixed": 5,
+    "informational_hardening_groups": 1,
+    "S3-01_cvss4": {
+      "score": 4.4,
+      "vector": "CVSS:4.0/AV:L/AC:H/AT:P/PR:L/UI:A/VC:N/VI:H/VA:H/SC:N/SI:N/SA:N"
+    }
+  },
+  "not_verified": [
+    "Actual Pages/R2 hosts and headers",
+    "TLS/HSTS/ECH/OCSP and deployed certificates",
+    "Bucket list/write permissions and token least privilege",
+    "Production logs/cache/version changes",
+    "Real NAS and filesystem ACL/time resolution",
+    "Edge/Safari/Firefox/mobile",
+    "Manual OS file picker",
+    "Binary SCA and native decoder/OpenSSL implementation/side channels",
+    "Multi-hour/multi-device resource stress",
+    "Unreachable or other-branch Git history"
+  ],
+  "reviewed_source_sha256": {
+    "encrypt.py": "51536a245e7f3241eab96dea50ee116cb002caa0c9855ab5f4a36d4c3ece92ea",
+    "upload.sh": "8f432f3872930943ab5d9177d3d30c01a8e185dd26e40626ff834b78a4812c5b",
+    "web/protocol.js": "32ca1045a11359e494b3b054ea01d10f2b9db63347ba09079577bbe7e0467e0e",
+    "web/sw.js": "b9a4b54ebea6329d0919764539616ad22e96ee591042f5b0de9eb24d27c533dc",
+    "web/app.js": "784e6158bdc942f7d548d3691184ae8da0b8dbc47fb0e34c012a27b18193a874",
+    "web/download.js": "66c1295c07c9a98ba5459471d925fac7daaaa47dd19656526dc255b688e3c528",
+    "web/index.html": "0eda6c66c6a17040bec0bba0bbdecf74731cba6148979cd43e0841069e25701f",
+    "web/style.css": "46d02f51bc8040e12d8bf8eac75c071091befd1bafd70198ea92a8075b880ed6",
+    "web/_headers": "9d772330b51fce9707fbbf571616a46b5e2161b461be28e30f6bb5fd3176553c",
+    "requirements.lock": "ef17d1df922086b81a75a7c2769e21c49492fdeb47fa9ca66df8af350130c91f",
+    "security/semgrep.yml": "15b3c8458f4a633ebaeaeab67f7758fdaf74145aef672273f7597ca4b82dc82a"
+  }
+}

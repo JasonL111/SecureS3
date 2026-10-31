@@ -9,7 +9,7 @@ Python 3.10+，已有 rclone 配置。NAS 加密不需要运行 Web 服务。
 ```sh
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.lock
 python encrypt.py movie.mp4 -o movie.enc --key-out movie.key
 sh upload.sh movie.enc remote:bucket/videos/movie.enc
 # 等价命令：rclone copyto movie.enc remote:bucket/videos/movie.enc --progress
@@ -49,6 +49,7 @@ File System Access API 使用临时文件，失败/取消时尽力 `abort()` 丢
 encrypt.py                流式加密 CLI
 upload.sh                 调用已有 rclone 配置，仅接收 .enc
 requirements.txt          运行依赖
+requirements.lock         生产传递依赖与制品 SHA-256 锁
 requirements-dev.txt      可选浏览器测试依赖
 web/index.html            简洁中文界面、CSP、原生 video
 web/style.css             响应式样式
@@ -156,7 +157,7 @@ SECURES3_LARGE_DOWNLOAD_TEST=1 python -m unittest discover -s tests -p test_down
 python -m unittest discover -s tests -p test_encrypt.py -v
 ```
 
-浏览器测试使用系统 `chromium`（PATH），FFmpeg 生成 H.264 测试片，两个本地 HTTP 源模拟静态托管和 S3。测试保留严格 CSP，不设置 bypass_csp；测试运行需要本地端口和 Chromium 子进程权限。生产运行仅需 cryptography，Playwright/FFmpeg 仅测试使用，不是转码服务。
+浏览器测试使用系统 `chromium`（PATH），攻击回归另需 Node.js（仅测试，不是后端）。FFmpeg 生成 H.264 测试片，两个本地 HTTP 源模拟静态托管和 S3。测试保留严格 CSP，不设置 bypass_csp；测试运行需要本地端口和 Chromium 子进程权限。生产运行仅需 cryptography，Playwright/FFmpeg 仅测试使用，不是转码服务。
 
 验证结果与限制见下方当前执行记录。真实 S3、实际 NAS、多 GB 连续播放、Edge/Safari/Firefox、移动端和公网 HTTPS 托管需在目标环境验收，不能由本地 Chromium 测试代替。只支持浏览器原生解码的 MP4（建议 H.264/AAC）；非 faststart MP4 也能通过末尾 Range 读取 moov；不提供转码。
 
@@ -177,3 +178,25 @@ python -m unittest discover -s tests -p test_encrypt.py -v
 - 验证了写入背压和进度、取消后重新下载、会话切换取消、错误密钥、后续块篡改、网络关闭/响应截断、403 过期、非法 Range、磁盘写入/关闭失败，均不会误报完成。取消和失败时预先存在的目标文件保持原样。
 - 验证了不支持 File System Access API 的明确提示、取消保存对话框及旧版 Worker 更新后下载可用。没有新增依赖、后端或协议版本；`encrypt.py` 未修改。
 - 自动化仅替换系统保存对话框，返回浏览器真实的 FileSystemFileHandle / FileSystemWritableFileStream；文件写入实际落盘。大文件使用独立持久测试配置以避开无痕 OPFS 配额限制。生产调用 `showSaveFilePicker` 保存到用户选择的文件位置，不使用 OPFS。未人工验证桌面操作系统的保存对话框，也未实测 Edge、真实 R2 网络、多小时下载或低内存设备；这些仍需在目标设备验收。
+
+
+## 安全加固与运行边界
+
+完整审计、逐项标准映射和已执行攻击证据见 [SECURITY_AUDIT.md](SECURITY_AUDIT.md)、[初始报告](security/INITIAL_AUDIT.md) 和 [ASVS 5.0 控制矩阵](security/ASVS_5.0_MAPPING.csv)。本项目没有企业级认证，也没有账户、中心化撤销、DRM 或解密后端。
+
+- NAS 加密脚本使用 POSIX 目录描述符/权限机制，面向 Linux/Unix NAS。请使用当前用户（或 root）拥有的私有输出目录，例如 `mkdir -m 700 encrypted`；非 sticky 的组/其他用户可写目录会被拒绝。不要以 root 身份处理不可信可变输入。文件必须是普通且稳定的文件；对正在录制/改写的文件应先使用 NAS 快照或只读副本。修改时间检测不能替代恶意同 UID/root 攻击下的原子快照。
+- 输出使用 O_EXCL，父目录固定，失败清理核对 inode，密钥 0600，并在成功前 flush/fsync。父目录和输入由可信管理员控制仍是前提；不会保证断电后的两个输出原子提交。仅 `.enc` 后缀不足以避免误传，upload.sh 额外检查容器头及总长；这不是无 key 的 GCM 认证，不能代替保密操作规范。
+- 生产 Python 安装优先使用 `requirements.lock` 和 `--require-hashes`。开发工具保持在 `requirements-dev.txt`；审计用 Bandit/Semgrep/pip-audit/detect-secrets 安装于临时环境，不是运行依赖。建议每月及发布前检查漏洞数据库；Critical/High 暴露应当天评估、尽快限制使用并安排补丁（建议 Critical 24 小时、High 7 天、Medium 30 天内完成处理/风险接受），随后重跑对应回归。此为建议维护时限，不表示已建立企业持续监控制度。
+- key 为 43 字符规范 Base64URL（32 字节）。视频 URL 原文和规范化 URL 均不超过 8192 个字符；分享 fragment 不超过 32768 字符；Range 表达式最多 128 字符。错误 fragment 也会立即从当前地址中移除，错误信息不回显原文，仍不能删除浏览器早已同步的历史或剪贴板副本。
+- Worker 每次保留最多 32 个页面会话/32 个配置任务，最多 3 个活跃取块任务、24 个等待任务、32 个响应流及每页 8 个响应流；超过限制报错（响应流限额返回 429）。同页新配置取消旧配置，不允许用同名 ID 覆盖别页会话，关闭时取消 pending/恢复和已有流。新 ID 使用 128-bit CSPRNG；旧 UUIDv4 临时 ID 仍可恢复，不改分享链接格式。
+- 单次 Range 包括响应头与整个正文的总超时为 120 秒，配置 30 秒，重启恢复握手 5 秒；不自动重试。很慢的连接可能需要用户修复网络后重新加载。所有异常响应都不会退化为全文件下载。密文 Content-Type 可缺省（仍逐块 GCM 校验），存在时只接受 `application/octet-stream`、`binary/octet-stream` 或 `video/mp4`；不要启用 Content-Encoding。
+- pagehide 尽力取消下载、清空密钥输入/会话并停止视频；浏览器崩溃、系统交换区、扩展或恶意同源代码不在可保证擦除范围。关闭后返回页面须重新输入或打开分享链接；不能通过这些措施撤销对方已取得的 key/明文字节。
+- 请将播放器独立部署在仅有受信脚本的 HTTPS 域名，仅发布 `web/`。`_headers` 为页面和 Worker 设置 CSP/no-referrer/nosniff/COOP；meta CSP 无法实现 frame-ancestors，也不能替代 Worker 自身的响应策略。生产域名是否真正返回这些头、HSTS/TLS 及是否暴露 `.git`/目录列表必须自行检查。GitHub Pages 不解释 `_headers`，需要支持响应头的平台才能满足相应要求。
+- AES key 应通过可信私密渠道分享，并有加密离线备份；key 丢失则无法恢复视频。泄露时须用新随机 key 重新加密并更新 URL，旧 key/密文的既有副本无法撤回。不要复用 key、不要将弱口令直接当 key，也不要认为随机 file_id 可以消除同 key nonce 重用的危害。
+- 公共密文不提供访问控制，CORS 也不是鉴权。Bucket 不应公开列举或写入；NAS rclone token 应限定目标 Bucket/前缀及所需操作，Pages 部署凭据不应拥有 R2 管理权。r2.dev 与自定义域名的缓存/限流策略不同，自定义域名也不自动保护公开对象。需要在实际账户配置请求限额、告警、日志权限和保留；公开下载可能产生请求/API/CDN 等费用或流量压力。R2、S3 的收费项目不同，不能一概按出站流量计费。
+
+密码资产清单：每文件 AES-256 key（仅 NAS 私密文件及分享接收端）、16 字节公开 file_id、96-bit nonce（64-bit 文件前缀 + 32-bit 块号）、128-bit GCM tag、完整头 + 块号 AAD、128-bit 浏览器会话标识；测试 SHA-256 用于比对输出。TLS 证书和 rclone/API token 由部署方管理，不包含于前端。未来算法变更应定义新格式版本并保留旧版本只读解密能力，不能静默改变 v1 参数；本次没有变更格式。
+
+危险/高资源组件为：cryptography/OpenSSL、原生浏览器和视频解码器、File System Access 磁盘写入、rclone 和网络 Range。应用有限额并使用维护中的实现，但不提供这些系统组件的完整 SBOM、侧信道或硬件隔离证明。
+
+额外攻击回归需 Node.js（仅测试，不是后端）：`python -m unittest discover -s tests -p test_security.py -v`；底层协议/Worker 模拟为 `node tests/security_protocol.cjs`。生产运行不需要 Node.js。

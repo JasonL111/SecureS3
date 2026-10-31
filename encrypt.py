@@ -2,9 +2,11 @@
 """ES3VID01: bounded-memory, independently authenticated AES-256-GCM chunks."""
 import argparse
 import base64
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import struct
+import stat
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -15,6 +17,8 @@ MAX_SAFE = 2**53 - 1
 
 
 def make_header(size, file_id):
+    if type(size) is not int or len(file_id) != 16:
+        raise ValueError('Invalid size or file identifier')
     count = max(1, (size + CHUNK - 1) // CHUNK)
     if size < 0 or count > 2**32 or HEADER.size + size + count * 16 > MAX_SAFE:
         raise ValueError('File exceeds protocol integer limits')
@@ -25,35 +29,66 @@ def encrypt(source, output, key_out):
     paths = [Path(p).resolve() for p in (source, output, key_out)]
     if len(set(paths)) != 3:
         raise ValueError('Input, ciphertext and key must have distinct paths')
-    # Exclusive creation prevents overwriting existing files (including symlinks).
-    created = []
-    try:
-        with open(source, 'rb') as src:
-            size = os.fstat(src.fileno()).st_size
-            file_id, key = os.urandom(16), AESGCM.generate_key(bit_length=256)
-            header = make_header(size, file_id)
-            cipher = AESGCM(key)
-            with open(output, 'xb') as dst:
-                created.append(output)
-                dst.write(header)
-                remaining = size
-                for index in range(max(1, (size + CHUNK - 1) // CHUNK)):
-                    block = src.read(min(CHUNK, remaining))
-                    if len(block) != min(CHUNK, remaining):
+    # Pin directories so renaming a parent cannot redirect writes or cleanup.
+    with ExitStack() as stack:
+        parents = []
+        for path in paths[1:]:
+            parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            stack.callback(os.close, parent)
+            info = os.fstat(parent)
+            if info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
+                raise ValueError('Use a private output directory (not group/world writable)')
+            parents.append((parent, path.name))
+        created = []
+
+        def create(index):
+            parent, name = parents[index]
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+            info = os.fstat(fd)
+            created.append((parent, name, info.st_dev, info.st_ino))
+            return os.fdopen(fd, 'wb')
+
+        def stamp(info):
+            return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+        try:
+            fd = os.open(paths[0], os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as src:
+                before = os.fstat(src.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError('Input must be a regular, stable file')
+                size = before.st_size
+                file_id, key = os.urandom(16), AESGCM.generate_key(bit_length=256)
+                header = make_header(size, file_id)
+                cipher = AESGCM(key)
+                with create(0) as dst:
+                    dst.write(header)
+                    remaining = size
+                    for index in range(max(1, (size + CHUNK - 1) // CHUNK)):
+                        block = src.read(min(CHUNK, remaining))
+                        if len(block) != min(CHUNK, remaining):
+                            raise OSError('Input changed during encryption')
+                        counter = struct.pack('>I', index)
+                        dst.write(cipher.encrypt(file_id[:8] + counter, block, header + counter))
+                        remaining -= len(block)
+                    if src.read(1) or stamp(os.fstat(src.fileno())) != stamp(before):
                         raise OSError('Input changed during encryption')
-                    counter = struct.pack('>I', index)
-                    dst.write(cipher.encrypt(file_id[:8] + counter, block, header + counter))
-                    remaining -= len(block)
-                if src.read(1) or os.fstat(src.fileno()).st_size != size:
-                    raise OSError('Input changed during encryption')
-            fd = os.open(key_out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            created.append(key_out)
-            with os.fdopen(fd, 'w', encoding='ascii') as dst:
-                dst.write(base64.urlsafe_b64encode(key).rstrip(b'=').decode() + '\n')
-    except BaseException:
-        for path in reversed(created):
-            Path(path).unlink(missing_ok=True)
-        raise
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                with create(1) as dst:
+                    os.fchmod(dst.fileno(), 0o600)
+                    dst.write(base64.urlsafe_b64encode(key).rstrip(b'=') + b'\n')
+                    dst.flush()
+                    os.fsync(dst.fileno())
+        except BaseException:
+            for parent, name, device, inode in reversed(created):
+                try:
+                    current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) == (device, inode):
+                        os.unlink(name, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+            raise
 
 
 def main():

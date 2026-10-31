@@ -39,18 +39,32 @@ class PlayerFixture(unittest.TestCase):
             f.seek(64 * 1024**2 - 8, 1); f.write(original[moov:])
         encrypt(cls.data / 'movie.mp4', cls.data / 'movie.enc', cls.data / 'movie.key')
         cls.requests = []
+        cls.http_requests = []
         cls.legacy_worker = False
         cls.delay_worker = False
+        cls.strict_headers = False
         data, requests = cls.data, cls.requests
 
         class Handler(SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs): super().__init__(*args, directory=str(ROOT / 'web'), **kwargs)
             def log_message(self, *args): pass
+            def end_headers(self):
+                if cls.strict_headers:
+                    for line in (ROOT/'web/_headers').read_text().splitlines()[1:]:
+                        if not line.startswith('  '): break
+                        name,value=line.strip().split(':',1);self.send_header(name,value.strip())
+                super().end_headers()
             def do_GET(self):
+                cls.http_requests.append((self.path, dict(self.headers)))
                 url = urlsplit(self.path)
                 if not url.path.startswith('/objects/'):
                     # Serve the app in a subdirectory to test Pages-style deployment.
                     if url.path.startswith('/viewer/'): self.path = self.path[len('/viewer'):]
+                    if self.path in ('/csp-probe.js','/worker-probe.js'):
+                        body=("window.cspProbe={};try{new Function('return 1')();window.cspProbe.evalBlocked=false;}catch{window.cspProbe.evalBlocked=true;}"
+                            if self.path=='/csp-probe.js' else
+                            "self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('message',e=>e.waitUntil(fetch(e.data.url).then(()=>e.ports[0].postMessage(true),()=>e.ports[0].postMessage(false))));")
+                        raw=body.encode();self.send_response(200);self.send_header('Content-Type','text/javascript');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
                     if self.path == '/sw.js' and (cls.legacy_worker or cls.delay_worker):
                         body=(ROOT/'web/sw.js').read_text()
                         if cls.legacy_worker: body=body.replace(', header: s.meta.bytes','')

@@ -6,7 +6,7 @@ let current = null, revision = 0;
 function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : ''; }
 function shareData() {
   const url = ES3.validateURL($('url').value.trim()), key = $('key').value.trim();
-  if (ES3.decode64(key).length !== 32) throw Error('AES 密钥必须是 32 字节的 Base64URL 字符串');
+  if (!/^[A-Za-z0-9_-]{43}$/.test(key) || ES3.decode64(key).length !== 32 || ES3.encode64(ES3.decode64(key)) !== key) throw Error('AES 密钥必须是 32 字节的 Base64URL 字符串');
   return {v: 1, url, key};
 }
 async function worker() {
@@ -60,15 +60,18 @@ async function load(event) {
     const data = shareData();
     status('正在验证密文和密钥…');
     await worker();
+    if (attempt !== revision) return;
     const key = await crypto.subtle.importKey('raw', ES3.decode64(data.key), 'AES-GCM', false, ['decrypt']);
+    if (attempt !== revision) return;
     if (current) navigator.serviceWorker.controller.postMessage({type: 'close', id: current.id});
     video.removeAttribute('src'); video.load();
-    current = {id: crypto.randomUUID(), url: data.url, key};
-    const verified = await configure(current);
+    const candidate = {id: ES3.sessionId(), url: data.url, key};
+    current = candidate;
+    const verified = await configure(candidate);
     if (attempt !== revision) return;
-    current.meta = ES3.parseHeader(verified.header);
-    downloads.setSession(current);
-    video.src = new URL('__video__/' + current.id, location.href).href;
+    candidate.meta = ES3.parseHeader(verified.header);
+    downloads.setSession(candidate);
+    video.src = new URL('__video__/' + candidate.id, location.href).href;
     video.load();
     status('已验证，正在读取视频信息…');
   } catch (error) { if (attempt === revision) status(error.message, true); }
@@ -79,6 +82,7 @@ $('share').addEventListener('click', async () => {
   try {
     const data = shareData();
     const url = new URL(location.href); url.search = ''; url.hash = ES3.encode64(new TextEncoder().encode(JSON.stringify(data)));
+    if (url.hash.length > 32769) throw Error('分享链接过长');
     await navigator.clipboard.writeText(url.href);
     status('分享链接已复制。链接包含密钥，请只发给可信的人。');
   } catch (error) { status('复制失败：' + error.message, true); }
@@ -88,18 +92,19 @@ video.addEventListener('error', () => {
   if ($('status').className === 'error') return;
   status(video.error?.code === 3 || video.error?.code === 4 ? '无法播放：MP4 编码不受支持，或视频数据不可用。请检查文件与密钥。' : '视频加载中断，请检查网络或更换已过期的 URL 后重新加载。', true);
 });
-window.addEventListener('pagehide', () => { downloads.cancel(); if (current) navigator.serviceWorker.controller?.postMessage({type: 'close', id: current.id}); });
+window.addEventListener('pagehide', () => { ++revision; downloads.setSession(null); if (current) navigator.serviceWorker.controller?.postMessage({type: 'close', id: current.id}); current = null; $('key').value = ''; video.pause(); video.removeAttribute('src'); video.load(); });
 function readShare() {
   if (location.hash.length <= 1) return;
+  const fragment = location.hash.slice(1);
+  history.replaceState(null, '', location.pathname + location.search);
   try {
-    if (location.hash.length > 32768) throw Error('分享链接过长');
-    const data = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(ES3.decode64(location.hash.slice(1))));
-    if (data.v !== 1 || typeof data.url !== 'string' || typeof data.key !== 'string') throw Error('分享链接格式错误');
+    if (fragment.length > 32768) throw Error('分享链接过长');
+    const data = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(ES3.decode64(fragment)));
+    if (!data || Array.isArray(data) || data.v !== 1 || typeof data.url !== 'string' || typeof data.key !== 'string') throw Error('分享链接格式错误');
     $('url').value = data.url; $('key').value = data.key;
     // Remove the secret from the current address/history entry; do not persist it elsewhere.
-    history.replaceState(null, '', location.pathname + location.search);
     load();
-  } catch (error) { status('无法读取分享链接：' + error.message, true); }
+  } catch (error) { status('无法读取分享链接：格式无效或不受支持。', true); }
 }
 
 window.addEventListener('hashchange', readShare);

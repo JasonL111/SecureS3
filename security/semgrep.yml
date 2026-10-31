@@ -1,0 +1,39 @@
+rules:
+  - id: dynamic-javascript-execution
+    languages: [javascript]
+    severity: ERROR
+    message: Review dynamic code execution.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+  - id: unsafe-dom-sink
+    languages: [javascript]
+    severity: ERROR
+    message: Review untrusted markup assignment.
+    pattern-either:
+      - pattern: $X.innerHTML = $VALUE
+      - pattern: $X.outerHTML = $VALUE
+      - pattern: document.write(...)
+  - id: browser-persistent-secret-storage
+    languages: [javascript]
+    severity: WARNING
+    message: Review browser persistence for keys or plaintext.
+    pattern-either:
+      - pattern: localStorage.setItem(...)
+      - pattern: sessionStorage.setItem(...)
+      - pattern: indexedDB.open(...)
+      - pattern: $CACHE.put(...)
+  - id: secret-console-output
+    languages: [javascript]
+    severity: WARNING
+    message: Review console output for sensitive session data.
+    pattern-either:
+      - pattern: console.log(...)
+      - pattern: console.error(...)
+  - id: shell-invocation
+    languages: [python]
+    severity: ERROR
+    message: Review shell interpolation.
+    pattern-either:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: os.system(...)
