@@ -1,6 +1,80 @@
 # Encrypted S3 Video Player
 
-一个无需后端的 MP4 加密在线播放器。NAS 用 Python 按 4 MiB 分块加密；S3 保存单个密文文件；浏览器通过 Service Worker、HTTP Range 和 Web Crypto 按需解密。原生 `<video controls playsinline>` 支持暂停、音量、全屏和拖动，不生成完整明文 Blob，不使用第三方脚本。
+一个无需后端的 MP4 加密在线播放器。NAS 用 Python 按 4 MiB 分块加密；S3 保存单个密文文件；浏览器通过 Service Worker、HTTP Range 和 Web Crypto 按需解密。原生 `<video controls playsinline>` 支持暂停、音量、全屏和拖动，不生成完整明文 Blob；密码学组件随站点本地托管，不从第三方 CDN 加载脚本。
+
+## Vault：一次主密码管理视频库
+
+现支持同一个网站的 **Vault Mode** 和旧版 **Share Mode**。没有配置 Vault 时仍可手动输入 URL/Key，旧链接不失效。NAS 端无需重新加密已存在视频。
+
+先按下方安装 Python 依赖，再在私有目录操作（主密码由 getpass 交互读取，不放在参数、环境变量或 shell history）：
+
+```sh
+mkdir -m 700 private-vault
+python vault.py init --output private-vault/vault.enc
+python vault.py add --vault private-vault/vault.enc \
+  --name "Movie A.mp4" --url "https://storage.example.com/a.enc" --key-file movie.key
+python vault.py list --vault private-vault/vault.enc
+# 从 list 结果读取记录 ID；list 不输出文件 key
+python vault.py remove --vault private-vault/vault.enc --id RECORD_ID
+python vault.py change-password --vault private-vault/vault.enc
+# 可选更高 KDF 成本：change-password ... --memory-kib 131072 --iterations 4
+python vault.py upload --vault private-vault/vault.enc --remote remote:bucket/vault.enc
+```
+
+新密码至少 12 个 Unicode 码点，最多 1024 UTF-8 字节，建议长随机/多词口令。密码**不规范化也不 trim**，组合重音和预组字符可能是不同密码。SSH 时使用带 TTY 的会话（例如 ssh -t）；非交互 stdin 管道被拒绝，避免静默回退到密码回显。不要把主密码直接写在命令或脚本里。
+
+也可直接使用已有 rclone 配置上传当前密文 Vault：
+
+```sh
+rclone copyto private-vault/vault.enc remote:bucket/vault.enc --header-upload "Cache-Control: no-store"
+```
+
+upload.sh 继续仅负责 `ES3VID01` 视频，不接受 Vault 的不同魔数。仅上传当前 vault.enc，**不要同步整个私有目录、.key 或 .bak**。Vault 是小型加密元数据，不存视频正文；默认 Argon2id m=64 MiB/t=3/p=1 → KEK → 包装随机 Vault Key → 加密目录内各独立文件 key。密码更改只重新包装 key，目录密文、视频、单文件 key 和分享链接保持不变。
+
+### Cloudflare Pages 配置与使用
+
+编辑唯一的非秘密配置文件 `web/config.js`，继续无构建命令、发布目录 `web`：
+
+```javascript
+globalThis.SECURES3_CONFIG = Object.freeze({
+  vaultUrl: 'https://your-r2-domain.example/vault.enc',
+  vaultId: '从 vault.py 输出读取的32位小写hex公共ID'
+});
+```
+
+vaultId 可留空，但建议从可信 NAS pin 此公共标识以检测整个 Vault 身份替换。这里**不能写主密码、KEK、Vault Key 或文件 key**。也可以在页面输入 Vault URL，不会持久化该设置。根页面默认显示 Vault 解锁：输入一次主密码 → 搜索/浏览 → 播放/拖动/下载/分享。所有操作共用原视频元素、Worker、Range 和下载实现。下载在保存对话框中取得授权后逐块保存，直接点目录行下载不会切换正在播放的视频。
+
+点击「锁定」停止当前播放/下载、终止解锁任务、清除库/当前 key 引用并返回解锁页；不宣称 JS 可以物理擦除所有历史内存副本。刷新视频库使用内存中的不可导出 KEK，重新认证整个包装和目录；密码包装已变更时需重新输入主密码。刷新认证失败或回滚会清空库并锁定，不展示部分新数据。
+
+从库点击「分享」只复制 `{v:1,url,key}` 的 fragment 链接。朋友在新/无痕窗口打开后，直接进入 Share Mode，不需要主密码，**不会获取整个 Vault 或加载 Argon2 Worker**。单文件链接不含 Vault Key、KEK 或其他文件 key。公开 R2 对象链接的可获取期由对象/域名决定，外部 Presigned URL 仍受其到期限制；不生成或续签 URL。
+
+R2 CORS 继续允许 GET/HEAD 并向播放器 Origin 暴露 Content-Length；视频 Range 所需头仍按下方示例。Vault 使用普通完整 GET，必须返回 200/完整有界文件，不接受内容压缩。浏览器使用 no-store，但 CDN 规则可覆盖缓存：请让 vault.enc 返回 `Cache-Control: no-store`、不要对它配置长 Edge TTL，并用实际域名核对头。r2.dev/自定义域名/实际账户策略需自行验证。
+
+### 可选的一步 NAS 发布
+
+```sh
+python vault.py publish --vault private-vault/vault.enc \
+  --input movie.mp4 --output movie.enc --key-out movie.key \
+  --name "Movie A.mp4" --url "https://storage.example.com/movie.enc" \
+  --remote remote:bucket/videos/movie.enc --vault-remote remote:bucket/vault.enc
+```
+
+只输入一次主密码，顺序加密、验证、上传视频、更新本地 Vault、上传 Vault。使用全新不可变对象名；--url 和 --remote 的对应关系由你确认，不自动签发 URL。视频上传失败不提交 Vault；Vault 上传失败保留可信本地最新版本，优先重试 `vault.py upload`。
+
+若已有 `.enc`/`.key`（包括上次发布失败保留的文件），显式使用：
+
+```sh
+python vault.py publish --vault private-vault/vault.enc \
+  --cipher movie.enc --key-file movie.key \
+  --name "Movie A.mp4" --url "https://storage.example.com/movie.enc" \
+  --remote remote:bucket/videos/movie.enc --vault-remote remote:bucket/vault.enc
+```
+
+这会流式验证现有视频，而不重加密；相同记录的重试不重复添加。冲突的 URL/ID/key 会拒绝，原始 MP4 和 key 不自动删除。两个云对象不是单个分布式事务；中断时可能有未被目录引用的新密文，但始终保留本地恢复材料。NAS 使用 `.bak` 上一加密版本及当前版本作为依据，可将备份复制到新路径后用 list 验证；不要盲目覆盖唯一当前版本。
+
+完整协议、两种 revision、原子写入、缓存/回滚和安全边界见 [VAULT_FORMAT.md](VAULT_FORMAT.md)。旧密码 + 旧副本可恢复旧 Vault Key，**更换密码无法撤销该 key，未来继续用同一 Vault Key 的目录也不免疫**；泄露后须建立新的 Vault/Key，旧文件 key/明文无法远程撤回。静态托管代码被篡改仍可窃取秘密，主密码忘记且无单文件 key/备份时无法恢复。
+
+本地 Argon2id 采用 hash-wasm 4.12.0 的内嵌 WASM，记录 npm SHA-512、资产 SHA-256 及 MIT 许可，不运行时请求第三方 CDN。仅增加 CSP `wasm-unsafe-eval`，保持 JS eval 被禁用。没有取得独立第三方对该具体构建的审计证明，交叉测试不能替代这类保证。
 
 ## 快速开始
 
@@ -53,6 +127,13 @@ requirements.lock         生产传递依赖与制品 SHA-256 锁
 requirements-dev.txt      可选浏览器测试依赖
 web/index.html            简洁中文界面、CSP、原生 video
 web/style.css             响应式样式
+vault.py                  创建/维护/轮换/上传 Vault 与可选发布
+web/config.js             非秘密 Vault URL/ID 配置
+web/vault.js              同一网站的视频库 UI 与锁定
+web/vault-crypto.js       Vault 格式、校验和本地 Web Crypto
+web/vault-kdf.js          可取消的 Argon2id Worker
+web/vendor/               固定版本本地 WASM/JS、许可和来源
+VAULT_FORMAT.md           Vault 二进制协议、密钥边界与实测记录
 web/app.js                分享链接、页面会话、Worker 生命周期
 web/download.js           分块解密下载、原生文件流写入、进度与取消
 web/protocol.js           文件头、整数校验、Range 和 AES 参数
@@ -61,6 +142,8 @@ web/_headers              Cloudflare Pages 安全响应头
  tests/test_encrypt.py    Python 加密/认证/内存测试
  tests/test_browser.py    本地双源 S3 模拟、真实 Chromium 测试
  tests/test_download.py   下载校验、原生文件流、失败清理与大文件测试
+ tests/test_vault.py      Vault CLI、原子更新、密码轮换与跨实现向量
+ tests/test_vault_ui.py   真实浏览器私人库、分享与锁定回归
 ```
 
 所有整数为**无符号、大端序**。文件头固定 48 字节：
@@ -200,3 +283,10 @@ python -m unittest discover -s tests -p test_encrypt.py -v
 危险/高资源组件为：cryptography/OpenSSL、原生浏览器和视频解码器、File System Access 磁盘写入、rclone 和网络 Range。应用有限额并使用维护中的实现，但不提供这些系统组件的完整 SBOM、侧信道或硬件隔离证明。
 
 额外攻击回归需 Node.js（仅测试，不是后端）：`python -m unittest discover -s tests -p test_security.py -v`；底层协议/Worker 模拟为 `node tests/security_protocol.cjs`。生产运行不需要 Node.js。
+
+
+## Vault 验证记录
+
+核心阶段执行 `python -m unittest discover -s tests -p test_vault.py -v`；集成阶段执行 `python -m unittest discover -s tests -p test_vault_ui.py -v`；最终使用 `SECURES3_LARGE_DOWNLOAD_TEST=1 python -m unittest discover -s tests -v` 验证全部原有和新增测试。2026-10-31 最终 **65 项全部通过，无跳过**，包含真实 3 GiB 流式保存；实际结果和扫描限制见 [VAULT_FORMAT.md](VAULT_FORMAT.md) 的执行记录。
+
+真实浏览器测试覆盖 100 条认证目录（其中两条有真实本地对象）、搜索、H.264 播放/Seek、原生文件流下载哈希、无痕单文件分享、锁定取消、刷新/回滚、包装变更及 Worker 隔离。其余记录用于目录规模验证，不宣称已测试 100 个真实 R2 视频。真实云上传/缓存、NAS 硬件断电、其他浏览器和人工系统保存对话框未验证。

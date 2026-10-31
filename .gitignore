@@ -12,3 +12,6 @@ __pycache__/
 *.p12
 rclone.conf
 .aws/
+*.enc.bak
+.*.enc.lock
+.*.tmp

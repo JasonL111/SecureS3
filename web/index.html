@@ -4,18 +4,39 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; media-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
-  <title>Encrypted S3 · 私密视频播放</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; media-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Encrypted S3 · Vault &amp; Player</title>
   <link rel="stylesheet" href="style.css">
   <script src="protocol.js" defer></script>
   <script src="download.js" defer></script>
+  <script src="config.js" defer></script>
+  <script src="vault-crypto.js" defer></script>
+  <script src="vault.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
 <main>
   <header><span class="mark">◈</span><span>ENCRYPTED S3</span><span class="badge">本地解密</span></header>
-  <h1>让视频，只为你播放。</h1>
+  <h1 id="heading">SecureS3 Vault</h1>
   <p class="intro">密文来自对象存储，解密留在浏览器。无需登录。</p>
+  <nav class="actions mode-nav" aria-label="模式"><button id="vault-mode" type="button" class="secondary">私人视频库</button><button id="manual-mode" type="button" class="secondary">手动播放</button></nav>
+  <section id="vault-panel" aria-label="私人视频库">
+    <form id="vault-unlock" autocomplete="off">
+      <label for="vault-url">Vault URL（非秘密配置）</label>
+      <input id="vault-url" type="url" required autocomplete="off" placeholder="https://storage.example.com/vault.enc" spellcheck="false">
+      <label for="master-password">主密码 · 仅在本地解锁</label>
+      <input id="master-password" type="password" required autocomplete="off" placeholder="输入主密码，不会发送到服务器">
+      <button id="unlock-vault" type="submit">解锁视频库</button>
+    </form>
+    <p id="vault-status" role="status" aria-live="polite">配置 Vault URL 后输入主密码，或选择手动播放。</p>
+    <section id="vault-library" hidden>
+      <div class="library-heading"><h2>我的视频库 <span id="vault-count">0 个视频</span></h2><div class="actions"><button id="refresh-vault" type="button" class="secondary">刷新视频库</button><button id="lock-vault" type="button" class="secondary">锁定</button></div></div>
+      <label for="vault-search">搜索视频名称</label><input id="vault-search" type="search" placeholder="搜索视频…" autocomplete="off">
+      <div id="vault-files"></div>
+    </section>
+  </section>
+  <section id="player-panel">
+  <h2 id="playing-name" hidden></h2>
   <form id="form">
     <label for="url">密文视频 URL</label>
     <input id="url" type="url" required placeholder="https://storage.example.com/movie.enc" autocomplete="off" spellcheck="false">
@@ -33,6 +54,7 @@
     <progress id="download-progress" max="100" value="0" aria-label="下载进度"></progress>
     <p id="download-size">下载进度：0% · 0 B / 0 B</p>
     <p id="download-status" role="status" aria-live="polite">验证视频后即可下载。</p>
+  </section>
   </section>
   <footer>仅支持浏览器兼容的 MP4。持有分享链接的人即可解密；请私下分享。</footer>
 </main>

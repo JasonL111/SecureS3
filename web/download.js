@@ -51,7 +51,7 @@ globalThis.ES3Download = (() => {
     const message = document.getElementById('download-status');
     const supported = isSecureContext && typeof window.showSaveFilePicker === 'function';
     const unsupported = '当前浏览器不支持大文件直接保存。请使用 HTTPS 或 localhost 下的最新版桌面 Chrome / Edge。';
-    let session = null, task = null;
+    let session = null, task = null, boundToPlayer = true;
     const status = (text, error = false) => { message.textContent = text; message.classList.toggle('error', error); };
     const updateButton = () => { button.disabled = !supported || !session || !!task; };
     const report = ({written, total, phase}) => {
@@ -61,9 +61,10 @@ globalThis.ES3Download = (() => {
       status(phase === 'saving' ? '正在完成本地保存…' : '正在下载并解密…');
       if (phase === 'saving') cancelButton.disabled = true;
     };
-    button.addEventListener('click', async () => {
-      if (!supported || !session || task) return;
-      const selected = session; // Inputs/session changes must never mix files or keys.
+    async function start(selected = session) {
+      if (!supported) { status(unsupported); return; }
+      if (!selected || task) return;
+      boundToPlayer = selected === session; // Inputs/session changes must never mix files or keys.
       const controller = new AbortController();
       task = controller; updateButton(); cancelButton.disabled = false;
       status('请选择 MP4 保存位置…');
@@ -72,10 +73,22 @@ globalThis.ES3Download = (() => {
         // Call within the click's user activation, before any await or network request.
         const handle = await window.showSaveFilePicker({suggestedName: filename(selected.url),
           types: [{description: 'MP4 Video', accept: {'video/mp4': ['.mp4']}}]});
-        // Open a transactional temporary file even if cancelled while the picker was open;
-        // save() immediately aborts it in that case, without truncating an existing target.
+        controller.signal.throwIfAborted();
+        let verified = selected;
+        if (!selected.meta) {
+          // A library row opens the picker in its click, then validates this one file.
+          // It neither switches the playing video nor sends Vault keys to the Worker.
+          const url = ES3.validateURL(selected.url);
+          const key = await crypto.subtle.importKey('raw', ES3.decode64(selected.key), 'AES-GCM', false, ['decrypt']);
+          const header = await ES3.fetchBytes(url, 0, ES3.HEADER - 1, null, controller.signal);
+          const meta = ES3.parseHeader(header.bytes);
+          if (meta.total !== header.total) throw Error('加密文件总长度不正确');
+          verified = {url, key, meta};
+          await ES3.decryptBlock(verified, 0, controller.signal);
+        }
+        controller.signal.throwIfAborted();
         writable = await handle.createWritable({keepExistingData: false});
-        await save(selected, writable, {signal: controller.signal, onProgress: report});
+        await save(verified, writable, {signal: controller.signal, onProgress: report});
         status('下载完成');
       } catch (error) {
         if (error.name === 'AbortError' || controller.signal.aborted) status('下载已取消，未完成的写入已中止。');
@@ -83,14 +96,15 @@ globalThis.ES3Download = (() => {
       } finally {
         task = null; cancelButton.disabled = true; updateButton();
       }
-    });
+    }
+    button.addEventListener('click', () => start());
     function cancel() { task?.abort(); }
     cancelButton.addEventListener('click', () => { cancel(); status('正在取消下载…'); cancelButton.disabled = true; });
     if (!supported) status(unsupported);
     return {
-      cancel,
+      cancel, supported, startFile: start,
       setSession(value) {
-        if (session !== value) cancel();
+        if (session !== value && boundToPlayer) cancel();
         session = value; updateButton();
         if (!task) {
           progress.value = 0;

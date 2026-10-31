@@ -4,10 +4,33 @@ const video = $('video');
 const downloads = ES3Download.setup();
 let current = null, revision = 0;
 function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : ''; }
-function shareData() {
-  const url = ES3.validateURL($('url').value.trim()), key = $('key').value.trim();
+function checkedFile(file) {
+  const url = ES3.validateURL(file.url.trim()), key = file.key.trim();
   if (!/^[A-Za-z0-9_-]{43}$/.test(key) || ES3.decode64(key).length !== 32 || ES3.encode64(ES3.decode64(key)) !== key) throw Error('AES 密钥必须是 32 字节的 Base64URL 字符串');
   return {v: 1, url, key};
+}
+function shareData() { return checkedFile({url:$('url').value, key:$('key').value}); }
+function stopPlayer() {
+  ++revision; downloads.cancel(); downloads.setSession(null);
+  if (current) navigator.serviceWorker.controller?.postMessage({type:'close',id:current.id});
+  current = null; $('key').value = ''; $('url').value = ''; $('load').disabled = false;
+  $('playing-name').textContent = ''; $('playing-name').hidden = true;
+  video.pause(); video.removeAttribute('src'); video.load();
+  status('粘贴密文链接和密钥，或打开专用分享链接。');
+}
+function playFile(file) {
+  $('url').value = file.url; $('key').value = file.key;
+  $('playing-name').textContent = file.name; $('playing-name').hidden = false;
+  return load();
+}
+async function shareFile(file) {
+  try {
+    const data = checkedFile(file), url = new URL(location.href);
+    url.search = ''; url.hash = ES3.encode64(new TextEncoder().encode(JSON.stringify(data)));
+    if (url.hash.length > 32769) throw Error('分享链接过长');
+    await navigator.clipboard.writeText(url.href);
+    status('分享链接已复制。链接只包含当前视频的密钥，请私下分享。');
+  } catch (error) { status('复制失败：' + error.message, true); }
 }
 async function worker() {
   if (!isSecureContext || !('serviceWorker' in navigator)) throw Error('需要 HTTPS 和支持 Service Worker 的浏览器');
@@ -78,34 +101,29 @@ async function load(event) {
   finally { if (attempt === revision) $('load').disabled = false; }
 }
 $('form').addEventListener('submit', load);
-$('share').addEventListener('click', async () => {
-  try {
-    const data = shareData();
-    const url = new URL(location.href); url.search = ''; url.hash = ES3.encode64(new TextEncoder().encode(JSON.stringify(data)));
-    if (url.hash.length > 32769) throw Error('分享链接过长');
-    await navigator.clipboard.writeText(url.href);
-    status('分享链接已复制。链接包含密钥，请只发给可信的人。');
-  } catch (error) { status('复制失败：' + error.message, true); }
-});
+$('share').addEventListener('click', () => shareFile({url:$('url').value,key:$('key').value}));
 video.addEventListener('loadedmetadata', () => status('视频已就绪，点击播放。可随时拖动进度条。'));
 video.addEventListener('error', () => {
   if ($('status').className === 'error') return;
   status(video.error?.code === 3 || video.error?.code === 4 ? '无法播放：MP4 编码不受支持，或视频数据不可用。请检查文件与密钥。' : '视频加载中断，请检查网络或更换已过期的 URL 后重新加载。', true);
 });
-window.addEventListener('pagehide', () => { ++revision; downloads.setSession(null); if (current) navigator.serviceWorker.controller?.postMessage({type: 'close', id: current.id}); current = null; $('key').value = ''; video.pause(); video.removeAttribute('src'); video.load(); });
+window.addEventListener('pagehide', stopPlayer);
 function readShare() {
-  if (location.hash.length <= 1) return;
+  if (location.hash.length <= 1) return false;
   const fragment = location.hash.slice(1);
   history.replaceState(null, '', location.pathname + location.search);
   try {
     if (fragment.length > 32768) throw Error('分享链接过长');
     const data = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(ES3.decode64(fragment)));
     if (!data || Array.isArray(data) || data.v !== 1 || typeof data.url !== 'string' || typeof data.key !== 'string') throw Error('分享链接格式错误');
-    $('url').value = data.url; $('key').value = data.key;
+    const file = checkedFile(data);
+    vaultUI.shareMode();
+    $('url').value = file.url; $('key').value = file.key;
     // Remove the secret from the current address/history entry; do not persist it elsewhere.
-    load();
-  } catch (error) { status('无法读取分享链接：格式无效或不受支持。', true); }
+    load(); return true;
+  } catch (error) { vaultUI.defaultMode(); status('无法读取分享链接：格式无效或不受支持。', true); return true; }
 }
 
-window.addEventListener('hashchange', readShare);
-readShare();
+const vaultUI = ES3Vault.setup({play:playFile, stop:stopPlayer, share:shareFile, download:file => downloads.startFile(file)}, downloads.supported);
+window.addEventListener('hashchange', () => { if (!readShare()) vaultUI.defaultMode(); });
+if (!readShare()) vaultUI.defaultMode();
